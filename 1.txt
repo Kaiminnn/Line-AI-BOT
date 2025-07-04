@@ -1,0 +1,8 @@
+#　VScodeの上のターミナルから開いて下記を実施
+cd "/Users/yu/Documents/VScode/001_Github/Line BOT AI"
+# 仮想環境を作成
+python3 -m venv venv
+# 仮想環境を有効化
+source venv/bin/activate
+#インストールする
+pip install -r requirements.txt
