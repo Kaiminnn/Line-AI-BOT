@@ -119,9 +119,10 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
-        if message_text.startswith("質問："):
-            # 「質問：」で始まる場合は、質問応答モード
-            question = message_text.replace("質問：", "", 1).strip()
+        # 全角・半角両方のコロンに対応
+        if message_text.startswith(("質問：", "質問:")):
+            # 「質問：」または「質問:」で始まる場合は、質問応答モード
+            question = message_text.replace("質問：", "", 1).replace("質問:", "", 1).strip()
             answer = answer_question(question)
             line_bot_api.reply_message(
                 ReplyMessageRequest(
