@@ -5,7 +5,7 @@ from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
-from sqlalchemy import create_engine, text, Column, Integer, Index
+from sqlalchemy import create_engine, text, Column, Integer, Index, Text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from pgvector.sqlalchemy import Vector
 from dotenv import load_dotenv
@@ -35,7 +35,7 @@ Base = declarative_base()
 class Document(Base):
     __tablename__ = 'documents'
     id = Column(Integer, primary_key=True)
-    content = Column(text)
+    content = Column(Text)
     embedding = Column(Vector(768)) # text-embedding-004の次元数
 
 engine = create_engine(DATABASE_URL)
