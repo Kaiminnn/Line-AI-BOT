@@ -6,3 +6,6 @@ sqlalchemy
 pgvector
 python-dotenv
 gunicorn
+Pillow
+requests
+beautifulsoup4
