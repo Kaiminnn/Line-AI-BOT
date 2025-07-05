@@ -6,7 +6,7 @@ import google.generativeai as genai
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
+from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage, PushMessageRequest
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from sqlalchemy import create_engine, text, Column, Integer, Text as AlchemyText #【修正】名前の衝突を避けるため変更
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -72,7 +72,7 @@ def get_text_from_url(url):
         print(f"URLの読み取り中にエラーが発生しました: {url} - {e}")
         return None
 
-# 【追加】長いテキストをチャンクに分割し、DBに保存する専門の関数
+# 長いテキストをチャンクに分割し、DBに保存する専門の関数
 def chunk_and_store_text(full_text, source_url):
     # テキスト分割器を準備
     text_splitter = RecursiveCharacterTextSplitter(
@@ -124,7 +124,7 @@ def embed_text(text_to_embed):
         print(f"ベクトル化中にエラーが発生しました: {e}")
         return None
 
-# 【修正】この関数は通常のメッセージ専用にする
+# この関数は通常のメッセージ専用にする
 def store_message(user_id, message_text):
     session = Session()
     try:
@@ -207,7 +207,7 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
-        # 【修正】仕事の順番を変更し、最初にURLのチェックを入れる
+        # メッセージからURLを正規表現で探す
         url_match = re.search(r'https?://\S+', message_text)
 
         if url_match:
@@ -229,10 +229,21 @@ def handle_message(event):
             if article_text:
                 # チャンクに分割してDBに保存
                 chunk_and_store_text(article_text, url)
-                # 完了したことをプッシュメッセージで知らせる
-                line_bot_api.push_message(to=user_id, messages=[TextMessage(text="URLの内容を記憶しました！")])
+                # 【ここを修正】完了したことをプッシュメッセージで知らせる
+                line_bot_api.push_message(
+                    PushMessageRequest(
+                        to=user_id,
+                        messages=[TextMessage(text="URLの内容を記憶しました！")]
+                    )
+                )
             else:
-                line_bot_api.push_message(to=user_id, messages=[TextMessage(text="URLの読み込みに失敗しました。")])
+                # 【ここを修正】失敗したこともプッシュメッセージで知らせる
+                line_bot_api.push_message(
+                    PushMessageRequest(
+                        to=user_id,
+                        messages=[TextMessage(text="URLの読み込みに失敗しました。")]
+                    )
+                )
 
         elif message_text.startswith(("質問：", "質問:")):
             # 応答モード
