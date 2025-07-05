@@ -19,6 +19,9 @@ LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
+# 保存するメッセージの上限数
+MAX_DOCUMENTS = 20000
+
 # Flaskアプリの初期化
 app = Flask(__name__)
 
@@ -55,15 +58,40 @@ def embed_text(text_to_embed):
                                    task_type="RETRIEVAL_DOCUMENT")
     return response['embedding']
 
-# メッセージをDBに保存する関数
+# メッセージをDBに保存し、上限を超えたら古いものを削除する関数
 def store_message(user_id, message_text):
     session = Session()
-    content_to_store = f"ユーザー({user_id[:5]}): {message_text}"
-    embedding = embed_text(content_to_store)
-    document = Document(content=content_to_store, embedding=embedding)
-    session.add(document)
-    session.commit()
-    session.close()
+    try:
+        # 1. 新しいメッセージをDBに保存
+        content_to_store = f"ユーザー({user_id[:5]}): {message_text}"
+        embedding = embed_text(content_to_store)
+        document = Document(content=content_to_store, embedding=embedding)
+        session.add(document)
+        session.commit()
+
+        # 2. 現在の総件数を取得
+        total_count = session.query(Document).count()
+
+        # 3. 上限を超えているかチェックし、超えていれば古いものを削除
+        if total_count > MAX_DOCUMENTS:
+            # 削除する件数を計算
+            items_to_delete_count = total_count - MAX_DOCUMENTS
+            
+            # 一番古いデータ（idが小さい順）を取得
+            oldest_docs = session.query(Document).order_by(Document.id.asc()).limit(items_to_delete_count).all()
+            
+            # 削除を実行
+            for doc in oldest_docs:
+                session.delete(doc)
+            
+            session.commit()
+            print(f"上限を超えたため、古いメッセージを {items_to_delete_count} 件削除しました。")
+
+    except Exception as e:
+        print(f"データベース処理中にエラーが発生しました: {e}")
+        session.rollback() # エラーが発生した場合は変更を元に戻す
+    finally:
+        session.close() # 正常時・エラー時を問わずセッションを閉じる
 
 # 質問に答える関数 (RAG)
 def answer_question(question):
