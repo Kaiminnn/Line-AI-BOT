@@ -158,6 +158,25 @@ def handle_message(event):
                     messages=[TextMessage(text=answer)]
                 )
             )
+
+        #DBの件数を確認するモード
+        elif message_text == "DB確認":
+            session = Session()
+            try:
+                total_count = session.query(Document).count()
+                reply_text = f"現在のデータベース保存件数は {total_count} 件です。"
+            except Exception as e:
+                reply_text = f"件数の取得中にエラーが発生しました: {e}"
+            finally:
+                session.close()
+            
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply_text)]
+                )
+            )
+
         else:
             # それ以外のメッセージは記憶モード
             store_message(user_id, message_text)
