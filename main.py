@@ -45,7 +45,7 @@ class Document(Base):
     content = Column(AlchemyText) #【修正】インポートした名前に合わせる
     embedding = Column(Vector(768))
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 Session = sessionmaker(bind=engine)
 
 # テーブルが存在しない場合に作成
