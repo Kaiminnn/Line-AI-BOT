@@ -87,7 +87,7 @@ def scrape_website(url):
 # 抽出したテキストを掃除（クリーニング）する関数
 def clean_text(raw_text):
     lines = (line.strip() for line in raw_text.splitlines())
-    chunks = (phrase.strip() for line in lines for phrase in line.split("  ") if len(phrase.strip()) > 30)
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  ") if len(phrase.strip()) > 20) # 20文字未満の短い行はノイズとして削除
     cleaned_text = '\n'.join(chunk for chunk in chunks if chunk)
     return cleaned_text
 
@@ -98,7 +98,7 @@ def chunk_and_store_text(cleaned_text, title, source_url):
     
     if not chunks:
         print("チャンクの生成に失敗しました。")
-        return False # 失敗したことを伝える
+        return False
 
     session = Session()
     try:
@@ -111,11 +111,11 @@ def chunk_and_store_text(cleaned_text, title, source_url):
         session.commit()
         print(f"URLの内容を {len(chunks)} 個のチャンクに分割してDBに保存しました。")
         check_and_prune_db(session)
-        return True # 成功したことを伝える
+        return True
     except Exception as e:
         print(f"チャンクのDB保存中にエラーが発生しました: {e}")
         session.rollback()
-        return False # 失敗したことを伝える
+        return False
     finally:
         session.close()
 
@@ -132,6 +132,10 @@ def embed_text(text_to_embed):
 
 # 通常のメッセージをDBに保存する関数
 def store_message(user_id, message_text):
+    # メッセージが空か、空白文字のみの場合は保存しない
+    if not message_text or message_text.isspace():
+        return
+
     session = Session()
     try:
         source_id = f"user:{user_id}"
@@ -214,7 +218,7 @@ def callback():
         abort(400)
     return 'OK'
 
-# 【ここを大幅修正】メッセージイベントを処理するハンドラ
+# 【ここを大幅修正】メッセージを仕分ける、賢い受付係
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_id = event.source.user_id
@@ -223,10 +227,7 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
-        # 仕事1：まず、どんなメッセージでも記憶する
-        store_message(user_id, message_text)
-
-        # 仕事2：「質問」かどうかをチェックする
+        # 仕事1：「質問」や「DB確認」なら、すぐに対応して仕事を終える
         if message_text.startswith(("質問：", "質問:")):
             question = message_text.replace("質問：", "", 1).replace("質問:", "", 1).strip()
             answer = answer_question(question, user_id)
@@ -236,9 +237,8 @@ def handle_message(event):
                     messages=[TextMessage(text=answer)]
                 )
             )
-            return # 質問に答えたら仕事終わり
+            return # ここで処理を終了
 
-        # 仕事3：「DB確認」かどうかをチェックする
         elif message_text == "DB確認":
             session = Session()
             total_count = session.query(Document).count()
@@ -250,6 +250,51 @@ def handle_message(event):
                     messages=[TextMessage(text=reply_text)]
                 )
             )
-            return # DB確認に答えたら仕事終わり
+            return # ここで処理を終了
 
-        #
+        # 仕事2：通常のメッセージとして、まず「文章」と「URL」を分離する
+        urls = re.findall(r'https?://\S+', message_text)
+        commentary = re.sub(r'https?://\S+', '', message_text).strip()
+
+        # 仕事3：分離した「文章」を記憶する
+        if commentary:
+            store_message(user_id, commentary)
+
+        # 仕事4：もしURLがあれば、一つずつ処理して記憶する
+        if urls:
+            # ユーザーにはまず、メッセージを受け取ったことを伝える
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f"メッセージと{len(urls)}件のURL、承知しました。内容を読んで記憶しますね。")]
+                )
+            )
+            
+            # 見つけたURLを一つずつ処理する
+            for url in urls:
+                print(f"メッセージ内のURLを検出しました: {url}")
+                scraped_data = scrape_website(url)
+                if scraped_data and scraped_data['raw_text']:
+                    cleaned_text = clean_text(scraped_data['raw_text'])
+                    is_success = chunk_and_store_text(cleaned_text, scraped_data['title'], url)
+                    
+                    # 処理結果をプッシュメッセージで通知
+                    if is_success:
+                        line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text=f"【完了】URLの内容を記憶しました！\n{url}")]))
+                    else:
+                        line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text=f"【失敗】URLの読み込み・保存に失敗しました。\n{url}")]))
+                else:
+                    line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text=f"【失敗】URLへのアクセスに失敗しました。\n{url}")]))
+        else:
+            # URLが無く、純粋な会話だった場合は、ここで返信する（任意）
+            # line_bot_api.reply_message(
+            #     ReplyMessageRequest(
+            #         reply_token=event.reply_token,
+            #         messages=[TextMessage(text="記憶しました！")]
+            #     )
+            # )
+            pass # 記憶するだけして、普段は黙っている
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
