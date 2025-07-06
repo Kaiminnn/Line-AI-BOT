@@ -163,31 +163,41 @@ def check_and_prune_db(session):
         session.commit()
         print(f"上限を超えたため、古いメッセージを {items_to_delete_count} 件削除しました。")
 
-
-# 質問に答える関数 (RAG)
 def answer_question(question, user_id):
     session = Session()
     try:
         question_embedding = embed_text(question)
         if question_embedding is None:
             return "質問の解析に失敗しました。"
+
+        # --- 【ここからが新しい検索ロジック】 ---
+
+        # 第一段階：まず、最も関連性の高い情報を1件だけ取得して「当たり」をつける
+        top_result = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).first()
         
-        initial_results = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(10).all()
-        
-        if not initial_results:
+        if not top_result:
             return "まだ情報が十分に蓄積されていないようです。"
 
-        source_candidates = [doc.source for doc in initial_results if doc.source and doc.source.startswith('http')]
-        
-        if source_candidates:
-            likely_source = max(set(source_candidates), key=source_candidates.count)
-            print(f"質問に関連する可能性の高いURL: {likely_source}")
-            final_results = session.query(Document).filter(Document.source == likely_source).order_by(Document.embedding.l2_distance(question_embedding)).limit(5).all()
+        # 見つかった情報がWeb記事（URLソース）のものか、普段の会話かを判断
+        if top_result.source and top_result.source.startswith('http'):
+            # Web記事についての質問だと判断した場合
+            likely_source = top_result.source
+            print(f"質問はURL「{likely_source}」に関連すると判断。絞り込み検索を実行します。")
+            
+            # 第二段階：そのURLの情報源に絞って、再度検索を行う（深掘り検索）
+            final_results = session.query(Document).filter(Document.source == likely_source).order_by(Document.embedding.l2_distance(question_embedding)).limit(7).all()
         else:
-            final_results = initial_results[:5]
+            # 普段の会話についての質問だと判断した場合
+            print("質問は普段の会話に関連すると判断。全体検索を実行します。")
+            
+            # 深掘りはせず、広く全体から関連情報を5件取得する
+            final_results = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(5).all()
+
+        # --- ここまでが新しい検索ロジック ---
+
 
         context = "\n".join(f"- {doc.content}" for doc in final_results)
-        prompt = f"""以下の情報を参考にして、質問に簡潔に答えてください。
+        prompt = f"""以下の情報を参考にして、質問に簡潔に答えてください。もし情報が不足していて答えられない場合は、「情報が見つかりません」と答えてください。
 
 # 参考情報
 {context}
