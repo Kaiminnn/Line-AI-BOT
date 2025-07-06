@@ -55,9 +55,8 @@ with engine.connect() as conn:
     conn.commit()
 Base.metadata.create_all(engine)
 
-# --- 【新機能】ここからが「記憶の質」を高めるための新しい関数群です ---
 
-# 1. Webサイトから、より賢くテキストとタイトルを抽出する関数
+# URLからテキストとタイトルを抽出する関数
 def scrape_website(url):
     try:
         response = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
@@ -66,7 +65,6 @@ def scrape_website(url):
         
         title = soup.title.string if soup.title else 'No Title'
         
-        # 本文が含まれていそうな主要なタグを優先的に探す
         main_content_tags = ["article", "main", ".main", ".content", "#main", "#content"]
         content_element = None
         for tag in main_content_tags:
@@ -86,27 +84,25 @@ def scrape_website(url):
         print(f"URLのスクレイピング中にエラーが発生しました: {url} - {e}")
         return None
 
-# 2. 抽出したテキストを掃除（クリーニング）する関数
+# 抽出したテキストを掃除（クリーニング）する関数
 def clean_text(raw_text):
     lines = (line.strip() for line in raw_text.splitlines())
-    # 短すぎる行や意味のない行を削除するルール
     chunks = (phrase.strip() for line in lines for phrase in line.split("  ") if len(phrase.strip()) > 30)
     cleaned_text = '\n'.join(chunk for chunk in chunks if chunk)
     return cleaned_text
 
-# 3. テキストをチャンクに分割し、メタデータ付きでDBに保存する関数
+# テキストをチャンクに分割し、メタデータ付きでDBに保存する関数
 def chunk_and_store_text(cleaned_text, title, source_url):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
     chunks = text_splitter.split_text(cleaned_text)
     
     if not chunks:
         print("チャンクの生成に失敗しました。")
-        return
+        return False # 失敗したことを伝える
 
     session = Session()
     try:
         for chunk in chunks:
-            # 【変更点】タイトルという文脈（メタデータ）を付けて内容を整形
             content_to_store = f"記事「{title}」より抜粋：\n{chunk}"
             embedding = embed_text(content_to_store)
             if embedding:
@@ -115,14 +111,13 @@ def chunk_and_store_text(cleaned_text, title, source_url):
         session.commit()
         print(f"URLの内容を {len(chunks)} 個のチャンクに分割してDBに保存しました。")
         check_and_prune_db(session)
+        return True # 成功したことを伝える
     except Exception as e:
         print(f"チャンクのDB保存中にエラーが発生しました: {e}")
         session.rollback()
+        return False # 失敗したことを伝える
     finally:
         session.close()
-
-# --- ここまでが新機能・変更点です ---
-
 
 # テキストをベクトル化する関数
 def embed_text(text_to_embed):
@@ -145,6 +140,7 @@ def store_message(user_id, message_text):
             document = Document(content=message_text, embedding=embedding, source=source_id)
             session.add(document)
             session.commit()
+            print(f"ユーザー({user_id[:5]})のメッセージをDBに保存しました。")
             check_and_prune_db(session)
     except Exception as e:
         print(f"データベース処理中にエラーが発生しました: {e}")
@@ -171,25 +167,19 @@ def answer_question(question, user_id):
         question_embedding = embed_text(question)
         if question_embedding is None:
             return "質問の解析に失敗しました。"
-
-        # --- 【変更点】二段階検索の実装 ---
-        # 第一段階：まず広く検索して、関連する情報源（source）の候補を見つける
+        
         initial_results = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(10).all()
         
         if not initial_results:
             return "まだ情報が十分に蓄積されていないようです。"
 
-        # 候補となる情報源をリストアップ
         source_candidates = [doc.source for doc in initial_results if doc.source and doc.source.startswith('http')]
         
-        # 最も可能性の高いURLを特定（一番多く出現したURLを選ぶ）
         if source_candidates:
             likely_source = max(set(source_candidates), key=source_candidates.count)
             print(f"質問に関連する可能性の高いURL: {likely_source}")
-            # 第二段階：そのURLの情報源に絞って、再度検索を行う（深掘り検索）
             final_results = session.query(Document).filter(Document.source == likely_source).order_by(Document.embedding.l2_distance(question_embedding)).limit(5).all()
         else:
-            # URLが見つからなければ、通常の会話から探す
             final_results = initial_results[:5]
 
         context = "\n".join(f"- {doc.content}" for doc in final_results)
@@ -224,7 +214,7 @@ def callback():
         abort(400)
     return 'OK'
 
-# メッセージイベントを処理するハンドラ
+# 【ここを大幅修正】メッセージイベントを処理するハンドラ
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_id = event.source.user_id
@@ -233,36 +223,33 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
-        url_match = re.search(r'https?://\S+', message_text)
+        # 仕事1：まず、どんなメッセージでも記憶する
+        store_message(user_id, message_text)
 
-        if url_match:
-            # 【変更点】URL処理のフローを新しい関数群を使うように変更
-            url = url_match.group(0)
-            print(f"URLが見つかりました: {url}")
-            line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"URLを読み込んでいます...")]))
-            
-            scraped_data = scrape_website(url)
-            if scraped_data and scraped_data['raw_text']:
-                cleaned_text = clean_text(scraped_data['raw_text'])
-                chunk_and_store_text(cleaned_text, scraped_data['title'], url)
-                line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="URLの内容を記憶しました！")]))
-            else:
-                line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="URLの読み込みに失敗しました。")]))
-
-        elif message_text.startswith(("質問：", "質問:")):
+        # 仕事2：「質問」かどうかをチェックする
+        if message_text.startswith(("質問：", "質問:")):
             question = message_text.replace("質問：", "", 1).replace("質問:", "", 1).strip()
             answer = answer_question(question, user_id)
-            line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=answer)]))
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=answer)]
+                )
+            )
+            return # 質問に答えたら仕事終わり
 
+        # 仕事3：「DB確認」かどうかをチェックする
         elif message_text == "DB確認":
             session = Session()
             total_count = session.query(Document).count()
             reply_text = f"現在のデータベース保存件数は {total_count} 件です。"
             session.close()
-            line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=reply_text)]))
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply_text)]
+                )
+            )
+            return # DB確認に答えたら仕事終わり
 
-        else:
-            store_message(user_id, message_text)
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+        #
