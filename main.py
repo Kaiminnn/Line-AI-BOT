@@ -39,13 +39,12 @@ genai.configure(api_key=GEMINI_API_KEY)
 # データベース設定
 Base = declarative_base()
 
-# 【変更点1】データベースの設計図に source 列を追加
 class Document(Base):
     __tablename__ = 'documents'
     id = Column(Integer, primary_key=True)
     content = Column(AlchemyText)
     embedding = Column(Vector(768))
-    source = Column(String(2048), nullable=True) # 出典元（URLやユーザーID）を保存する列
+    source = Column(String(2048), nullable=True)
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 Session = sessionmaker(bind=engine)
@@ -56,23 +55,74 @@ with engine.connect() as conn:
     conn.commit()
 Base.metadata.create_all(engine)
 
+# --- 【新機能】ここからが「記憶の質」を高めるための新しい関数群です ---
 
-# URLからテキストを抽出する関数
-def get_text_from_url(url):
+# 1. Webサイトから、より賢くテキストとタイトルを抽出する関数
+def scrape_website(url):
     try:
-        response = requests.get(url, timeout=15)
+        response = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
-        for script_or_style in soup(["script", "style"]):
+        
+        title = soup.title.string if soup.title else 'No Title'
+        
+        # 本文が含まれていそうな主要なタグを優先的に探す
+        main_content_tags = ["article", "main", ".main", ".content", "#main", "#content"]
+        content_element = None
+        for tag in main_content_tags:
+            if soup.select_one(tag):
+                content_element = soup.select_one(tag)
+                break
+        
+        if not content_element:
+            content_element = soup.body
+
+        for script_or_style in content_element(["script", "style"]):
             script_or_style.decompose()
-        text = soup.get_text()
-        lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = '\n'.join(chunk for chunk in chunks if chunk)
-        return text
+            
+        text = content_element.get_text()
+        return {"title": title, "raw_text": text}
     except Exception as e:
-        print(f"URLの読み取り中にエラーが発生しました: {url} - {e}")
+        print(f"URLのスクレイピング中にエラーが発生しました: {url} - {e}")
         return None
+
+# 2. 抽出したテキストを掃除（クリーニング）する関数
+def clean_text(raw_text):
+    lines = (line.strip() for line in raw_text.splitlines())
+    # 短すぎる行や意味のない行を削除するルール
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  ") if len(phrase.strip()) > 30)
+    cleaned_text = '\n'.join(chunk for chunk in chunks if chunk)
+    return cleaned_text
+
+# 3. テキストをチャンクに分割し、メタデータ付きでDBに保存する関数
+def chunk_and_store_text(cleaned_text, title, source_url):
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
+    chunks = text_splitter.split_text(cleaned_text)
+    
+    if not chunks:
+        print("チャンクの生成に失敗しました。")
+        return
+
+    session = Session()
+    try:
+        for chunk in chunks:
+            # 【変更点】タイトルという文脈（メタデータ）を付けて内容を整形
+            content_to_store = f"記事「{title}」より抜粋：\n{chunk}"
+            embedding = embed_text(content_to_store)
+            if embedding:
+                document = Document(content=content_to_store, embedding=embedding, source=source_url)
+                session.add(document)
+        session.commit()
+        print(f"URLの内容を {len(chunks)} 個のチャンクに分割してDBに保存しました。")
+        check_and_prune_db(session)
+    except Exception as e:
+        print(f"チャンクのDB保存中にエラーが発生しました: {e}")
+        session.rollback()
+    finally:
+        session.close()
+
+# --- ここまでが新機能・変更点です ---
+
 
 # テキストをベクトル化する関数
 def embed_text(text_to_embed):
@@ -85,50 +135,24 @@ def embed_text(text_to_embed):
         print(f"ベクトル化中にエラーが発生しました: {e}")
         return None
 
-# 【変更点2】記憶関数に source を記録する機能を追加
-def chunk_and_store_text(full_text, source_url):
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    chunks = text_splitter.split_text(full_text)
-    
-    if not chunks:
-        print("チャンクの生成に失敗しました。")
-        return
-
-    session = Session()
-    try:
-        for chunk in chunks:
-            embedding = embed_text(chunk) # チャンクのみをベクトル化
-            if embedding:
-                # contentには元のチャンク、sourceにはURLを保存
-                document = Document(content=chunk, embedding=embedding, source=source_url)
-                session.add(document)
-        session.commit()
-        print(f"URLの内容を {len(chunks)} 個のチャンクに分割してDBに保存しました。")
-        check_and_prune_db(session) # 上限チェック
-    except Exception as e:
-        print(f"チャンクのDB保存中にエラーが発生しました: {e}")
-        session.rollback()
-    finally:
-        session.close()
-
+# 通常のメッセージをDBに保存する関数
 def store_message(user_id, message_text):
     session = Session()
     try:
         source_id = f"user:{user_id}"
         embedding = embed_text(message_text)
         if embedding:
-            # contentには会話本文、sourceにはユーザーIDを保存
             document = Document(content=message_text, embedding=embedding, source=source_id)
             session.add(document)
             session.commit()
-            check_and_prune_db(session) # 上限チェック
+            check_and_prune_db(session)
     except Exception as e:
         print(f"データベース処理中にエラーが発生しました: {e}")
         session.rollback()
     finally:
         session.close()
 
-# 【追加】DBの上限チェックと削除を共通関数化
+# DBの上限チェックと削除を共通関数化
 def check_and_prune_db(session):
     total_count = session.query(Document).count()
     if total_count > MAX_DOCUMENTS:
@@ -140,7 +164,7 @@ def check_and_prune_db(session):
         print(f"上限を超えたため、古いメッセージを {items_to_delete_count} 件削除しました。")
 
 
-# 【変更点3】質問応答関数を「二段階検索」にアップグレード
+# 質問に答える関数 (RAG)
 def answer_question(question, user_id):
     session = Session()
     try:
@@ -148,31 +172,28 @@ def answer_question(question, user_id):
         if question_embedding is None:
             return "質問の解析に失敗しました。"
 
-        # --- 第一段階：大まかな検索で、関連する情報源を探す ---
-        initial_results = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(5).all()
+        # --- 【変更点】二段階検索の実装 ---
+        # 第一段階：まず広く検索して、関連する情報源（source）の候補を見つける
+        initial_results = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(10).all()
         
         if not initial_results:
             return "まだ情報が十分に蓄積されていないようです。"
 
-        # 見つかった情報源（source）の候補をリストアップ
-        source_candidates = [doc.source for doc in initial_results if doc.source]
+        # 候補となる情報源をリストアップ
+        source_candidates = [doc.source for doc in initial_results if doc.source and doc.source.startswith('http')]
         
-        # 最も可能性の高い情報源を決定（一番最初の結果のsourceを採用する簡単な方法）
-        likely_source = source_candidates[0] if source_candidates else None
-        
-        print(f"質問に関連する可能性の高い情報源: {likely_source}")
-
-        # --- 第二段階：情報源を絞って、深掘り検索 ---
-        if likely_source:
-            # 特定の情報源（URLやユーザー）に絞って、再度検索
+        # 最も可能性の高いURLを特定（一番多く出現したURLを選ぶ）
+        if source_candidates:
+            likely_source = max(set(source_candidates), key=source_candidates.count)
+            print(f"質問に関連する可能性の高いURL: {likely_source}")
+            # 第二段階：そのURLの情報源に絞って、再度検索を行う（深掘り検索）
             final_results = session.query(Document).filter(Document.source == likely_source).order_by(Document.embedding.l2_distance(question_embedding)).limit(5).all()
         else:
-            # 特定できなければ、全体から探す
-            final_results = initial_results
+            # URLが見つからなければ、通常の会話から探す
+            final_results = initial_results[:5]
 
-        # AIへのプロンプトを作成
         context = "\n".join(f"- {doc.content}" for doc in final_results)
-        prompt = f"""以下の情報を参考にして、質問に答えてください。情報源がURLの場合、その記事の内容について答えているように振る舞ってください。
+        prompt = f"""以下の情報を参考にして、質問に簡潔に答えてください。
 
 # 参考情報
 {context}
@@ -215,26 +236,25 @@ def handle_message(event):
         url_match = re.search(r'https?://\S+', message_text)
 
         if url_match:
-            # ... (URL処理のコードは、簡潔さのためここでは省略。動作は同じ)
+            # 【変更点】URL処理のフローを新しい関数群を使うように変更
             url = url_match.group(0)
+            print(f"URLが見つかりました: {url}")
             line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"URLを読み込んでいます...")]))
-            article_text = get_text_from_url(url)
-            if article_text:
-                chunk_and_store_text(article_text, url)
+            
+            scraped_data = scrape_website(url)
+            if scraped_data and scraped_data['raw_text']:
+                cleaned_text = clean_text(scraped_data['raw_text'])
+                chunk_and_store_text(cleaned_text, scraped_data['title'], url)
                 line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="URLの内容を記憶しました！")]))
             else:
                 line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="URLの読み込みに失敗しました。")]))
 
         elif message_text.startswith(("質問：", "質問:")):
-            # 応答モード
             question = message_text.replace("質問：", "", 1).replace("質問:", "", 1).strip()
-            # 【修正】answer_question に user_id も渡す
             answer = answer_question(question, user_id)
             line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=answer)]))
 
         elif message_text == "DB確認":
-            # DB確認モード
-            # (省略...動作は同じ)
             session = Session()
             total_count = session.query(Document).count()
             reply_text = f"現在のデータベース保存件数は {total_count} 件です。"
@@ -242,7 +262,6 @@ def handle_message(event):
             line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=reply_text)]))
 
         else:
-            # 記憶モード
             store_message(user_id, message_text)
 
 if __name__ == "__main__":
