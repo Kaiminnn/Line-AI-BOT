@@ -56,50 +56,38 @@ with engine.connect() as conn:
 Base.metadata.create_all(engine)
 
 
-# URLからテキストとタイトルを抽出する関数
+# --- 既存のヘルパー関数群（変更なし） ---
 def scrape_website(url):
     try:
         response = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
-        
         title = soup.title.string if soup.title else 'No Title'
-        
         main_content_tags = ["article", "main", ".main", ".content", "#main", "#content"]
         content_element = None
         for tag in main_content_tags:
             if soup.select_one(tag):
                 content_element = soup.select_one(tag)
                 break
-        
-        if not content_element:
-            content_element = soup.body
-
+        if not content_element: content_element = soup.body
         for script_or_style in content_element(["script", "style"]):
             script_or_style.decompose()
-            
         text = content_element.get_text()
         return {"title": title, "raw_text": text}
     except Exception as e:
         print(f"URLのスクレイピング中にエラーが発生しました: {url} - {e}")
         return None
 
-# 抽出したテキストを掃除（クリーニング）する関数
 def clean_text(raw_text):
     lines = (line.strip() for line in raw_text.splitlines())
-    chunks = (phrase.strip() for line in lines for phrase in line.split("  ") if len(phrase.strip()) > 20) # 20文字未満の短い行はノイズとして削除
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  ") if len(phrase.strip()) > 20)
     cleaned_text = '\n'.join(chunk for chunk in chunks if chunk)
     return cleaned_text
 
-# テキストをチャンクに分割し、メタデータ付きでDBに保存する関数
 def chunk_and_store_text(cleaned_text, title, source_url):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
     chunks = text_splitter.split_text(cleaned_text)
-    
-    if not chunks:
-        print("チャンクの生成に失敗しました。")
-        return False
-
+    if not chunks: return False
     session = Session()
     try:
         for chunk in chunks:
@@ -119,7 +107,6 @@ def chunk_and_store_text(cleaned_text, title, source_url):
     finally:
         session.close()
 
-# テキストをベクトル化する関数
 def embed_text(text_to_embed):
     try:
         response = genai.embed_content(model="models/text-embedding-004",
@@ -130,12 +117,8 @@ def embed_text(text_to_embed):
         print(f"ベクトル化中にエラーが発生しました: {e}")
         return None
 
-# 通常のメッセージをDBに保存する関数
 def store_message(user_id, message_text):
-    # メッセージが空か、空白文字のみの場合は保存しない
-    if not message_text or message_text.isspace():
-        return
-
+    if not message_text or message_text.isspace(): return
     session = Session()
     try:
         source_id = f"user:{user_id}"
@@ -152,7 +135,6 @@ def store_message(user_id, message_text):
     finally:
         session.close()
 
-# DBの上限チェックと削除を共通関数化
 def check_and_prune_db(session):
     total_count = session.query(Document).count()
     if total_count > MAX_DOCUMENTS:
@@ -163,6 +145,51 @@ def check_and_prune_db(session):
         session.commit()
         print(f"上限を超えたため、古いメッセージを {items_to_delete_count} 件削除しました。")
 
+
+# --- 【ここからが今回の改造の心臓部です】 ---
+
+# 【新機能】Geminiに情報の「目利き（リランキング）」をさせる専門家
+def rerank_documents(question, documents):
+    if not documents:
+        return []
+
+    # Geminiに渡すためのプロンプトを作成
+    rerank_prompt = f"""以下の「ユーザーの質問」と、それに関連する可能性のある「資料リスト」があります。
+資料リストの中から、質問に答えるために**本当に重要度の高い資料**を、重要度順に最大5つ選び、その番号だけをカンマ区切りで出力してください。
+例： 3,1,5,2,4
+
+---
+# ユーザーの質問
+{question}
+
+---
+# 資料リスト
+"""
+    # 資料に番号を付けてプロンプトに追加
+    for i, doc in enumerate(documents):
+        rerank_prompt += f"【資料{i}】\n{doc.content}\n\n"
+    
+    try:
+        # Geminiにリランキングを依頼
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        response = model.generate_content(rerank_prompt)
+        
+        # Geminiの回答（例: "1,5,2"）から、番号のリストを抽出
+        reranked_indices = [int(i.strip()) for i in response.text.split(',') if i.strip().isdigit()]
+        
+        # 抽出した番号順に、元のドキュメントを並べ替える
+        reranked_docs = [documents[i] for i in reranked_indices if i < len(documents)]
+        
+        print(f"リランキング後のドキュメント順: {reranked_indices}")
+        return reranked_docs
+
+    except Exception as e:
+        print(f"リランキング中にエラーが発生しました: {e}")
+        # エラーが起きた場合は、元のリストの上位5件をそのまま返す
+        return documents[:5]
+
+
+# 【修正】質問応答関数を「リランキング方式」にアップグレード
 def answer_question(question, user_id):
     session = Session()
     try:
@@ -170,34 +197,24 @@ def answer_question(question, user_id):
         if question_embedding is None:
             return "質問の解析に失敗しました。"
 
-        # --- 【ここからが新しい検索ロジック】 ---
-
-        # 第一段階：まず、最も関連性の高い情報を1件だけ取得して「当たり」をつける
-        top_result = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).first()
+        # ステップ1：広く情報を集める（アシスタントの仕事）
+        # 類似度の高い情報を多めに25件取得する
+        candidate_docs = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(25).all()
         
-        if not top_result:
+        if not candidate_docs:
             return "まだ情報が十分に蓄積されていないようです。"
 
-        # 見つかった情報がWeb記事（URLソース）のものか、普段の会話かを判断
-        if top_result.source and top_result.source.startswith('http'):
-            # Web記事についての質問だと判断した場合
-            likely_source = top_result.source
-            print(f"質問はURL「{likely_source}」に関連すると判断。絞り込み検索を実行します。")
-            
-            # 第二段階：そのURLの情報源に絞って、再度検索を行う（深掘り検索）
-            final_results = session.query(Document).filter(Document.source == likely_source).order_by(Document.embedding.l2_distance(question_embedding)).limit(7).all()
-        else:
-            # 普段の会話についての質問だと判断した場合
-            print("質問は普段の会話に関連すると判断。全体検索を実行します。")
-            
-            # 深掘りはせず、広く全体から関連情報を5件取得する
-            final_results = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(5).all()
+        # ステップ2：情報の「目利き」をさせる（司書の仕事）
+        # 取得した25件の候補を、Geminiを使ってリランキングする
+        final_results = rerank_documents(question, candidate_docs)
 
-        # --- ここまでが新しい検索ロジック ---
+        if not final_results:
+             # リランキングで何も選ばれなかった場合
+            return "関連性の高い情報が見つかりませんでした。"
 
-
+        # ステップ3：最終的な回答を生成する
         context = "\n".join(f"- {doc.content}" for doc in final_results)
-        prompt = f"""以下の情報を参考にして、質問に簡潔に答えてください。もし情報が不足していて答えられない場合は、「情報が見つかりません」と答えてください。
+        prompt = f"""以下の非常に精度の高い参考情報だけを使って、ユーザーの質問に簡潔に答えてください。
 
 # 参考情報
 {context}
@@ -228,7 +245,7 @@ def callback():
         abort(400)
     return 'OK'
 
-# 【ここを大幅修正】メッセージを仕分ける、賢い受付係
+# メッセージを仕分ける、受付係（変更なし）
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_id = event.source.user_id
@@ -237,7 +254,6 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
-        # 仕事1：「質問」や「DB確認」なら、すぐに対応して仕事を終える
         if message_text.startswith(("質問：", "質問:")):
             question = message_text.replace("質問：", "", 1).replace("質問:", "", 1).strip()
             answer = answer_question(question, user_id)
@@ -247,7 +263,7 @@ def handle_message(event):
                     messages=[TextMessage(text=answer)]
                 )
             )
-            return # ここで処理を終了
+            return
 
         elif message_text == "DB確認":
             session = Session()
@@ -260,51 +276,39 @@ def handle_message(event):
                     messages=[TextMessage(text=reply_text)]
                 )
             )
-            return # ここで処理を終了
+            return
 
-        # 仕事2：通常のメッセージとして、まず「文章」と「URL」を分離する
         urls = re.findall(r'https?://\S+', message_text)
         commentary = re.sub(r'https?://\S+', '', message_text).strip()
 
-        # 仕事3：分離した「文章」を記憶する
         if commentary:
             store_message(user_id, commentary)
 
-        # 仕事4：もしURLがあれば、一つずつ処理して記憶する
         if urls:
-            # ユーザーにはまず、メッセージを受け取ったことを伝える
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
                     messages=[TextMessage(text=f"メッセージと{len(urls)}件のURL、承知しました。内容を読んで記憶しますね。")]
                 )
             )
-            
-            # 見つけたURLを一つずつ処理する
             for url in urls:
                 print(f"メッセージ内のURLを検出しました: {url}")
                 scraped_data = scrape_website(url)
                 if scraped_data and scraped_data['raw_text']:
                     cleaned_text = clean_text(scraped_data['raw_text'])
                     is_success = chunk_and_store_text(cleaned_text, scraped_data['title'], url)
-                    
-                    # 処理結果をプッシュメッセージで通知
                     if is_success:
                         line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text=f"【完了】URLの内容を記憶しました！\n{url}")]))
                     else:
                         line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text=f"【失敗】URLの読み込み・保存に失敗しました。\n{url}")]))
                 else:
                     line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text=f"【失敗】URLへのアクセスに失敗しました。\n{url}")]))
+        elif commentary:
+             # URLがなく、純粋な会話だった場合は、ここで返信する（任意）
+            pass
         else:
-            # URLが無く、純粋な会話だった場合は、ここで返信する（任意）
-            # line_bot_api.reply_message(
-            #     ReplyMessageRequest(
-            #         reply_token=event.reply_token,
-            #         messages=[TextMessage(text="記憶しました！")]
-            #     )
-            # )
-            pass # 記憶するだけして、普段は黙っている
-
+            # URLも文章もない（スタンプなど）の場合は何もしない
+            pass
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
