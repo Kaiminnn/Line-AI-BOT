@@ -214,6 +214,7 @@ def handle_image_message(event):
             line_bot_api = MessagingApi(api_client)
             line_bot_blob_api = MessagingApiBlob(api_client)
             
+            # まずユーザーに、画像の処理を開始したことを素早く知らせる
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
@@ -221,22 +222,32 @@ def handle_image_message(event):
                 )
             )
 
-            # 【ここを修正】画像データの正しい読み込み方
+            # 【ここが修正点】LINEのサーバーから画像データを正しくダウンロードする
             message_content_stream = line_bot_blob_api.get_message_content(message_id=message_id)
-            image_data_bytes = message_content_stream.read()
-            img = Image.open(BytesIO(image_data_bytes))
+            
+            # ダウンロードしたデータをメモリ上で扱うための正しい作法
+            image_data = BytesIO()
+            for chunk in message_content_stream.iter_content():
+                image_data.write(chunk)
+            image_data.seek(0)
 
+            # これで、Pillowが正しく画像を読み込める
+            img = Image.open(image_data)
+
+            # Geminiに画像を渡して、その説明を生成させる
             model = genai.GenerativeModel('gemini-1.5-flash-latest')
             response = model.generate_content(["この画像を日本語で詳しく、見たままに説明してください。", img])
             image_description = response.text.strip()
 
+            # ユーザーの発言として、チャット履歴にも保存
             history_text = f"（画像が投稿されました。画像の内容： {image_description}）"
             add_to_chat_history(session_id, 'user', history_text)
             
-            # 【ここを修正】sourceを明示的に指定して長期記憶に保存
+            # 長期記憶にも、説明文を一つの情報として保存
             image_source = f"image_from_user:{user_id}"
             store_message(user_id, history_text, source=image_source)
 
+            # 処理完了をプッシュメッセージで通知
             push_text = f"画像を記憶しました！\n\n【AIによる画像の説明】\n{image_description}"
             line_bot_api.push_message(
                 PushMessageRequest(
