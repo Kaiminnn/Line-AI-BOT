@@ -393,12 +393,18 @@ def handle_image_message(event):
                 )
             )
 
-            message_content = line_bot_blob_api.get_message_content(message_id=message_id)
-            image_data = b''
-            for chunk in message_content:
-                print(f"DEBUG: chunkの中身: {chunk}, chunkの型: {type(chunk)}") # この調査用の行を追加
-                image_data += chunk
+            # --- ここからが修正箇所です ---
             
+            # 1. LINEサーバーから画像データを取得
+            message_content = line_bot_blob_api.get_message_content(message_id=message_id)
+
+            # 2.「.content」をつけるだけで、全ての画像データを一括で受け取れます
+            image_data = message_content.content
+            
+            # --- 修正箇所はここまで ---
+
+
+            # 3. 時間のかかる処理を別のスレッド（バックグラウンド）で実行する
             thread = threading.Thread(
                 target=process_image_and_push_result, 
                 args=(user_id, image_data)
