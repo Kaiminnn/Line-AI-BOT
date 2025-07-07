@@ -361,21 +361,52 @@ def handle_image_message(event):
             line_bot_api = MessagingApi(api_client)
             line_bot_blob_api = MessagingApiBlob(api_client)
             
-            line_bot_api.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text="画像を認識中です...")]))
+            # まずユーザーに、画像の処理を開始したことを素早く知らせる
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="画像を認識中です...")]
+                )
+            )
 
-            message_content = line_bot_blob_api.get_message_content(message_id=message_id)
+            # 【ここが修正点】LINEのサーバーから画像データをバイトの塊として直接受け取る
+            image_data_bytes = line_bot_blob_api.get_message_content(message_id=message_id)
             
-            image_data = BytesIO()
-            for chunk in message_content.iter_content():
-                image_data.write(chunk)
-            image_data.seek(0)
-            
-            # 画像処理もバックグラウンドで行う
-            thread = threading.Thread(target=process_image_and_notify, args=(user_id, session_id, image_data.getvalue()))
-            thread.start()
+            # 受け取ったバイトデータをPillowで画像として開く
+            img = Image.open(BytesIO(image_data_bytes))
 
+            # Geminiに画像を渡して、その説明を生成させる
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content(["この画像を日本語で詳しく、見たままに説明してください。", img])
+            image_description = response.text.strip()
+
+            # ユーザーの発言として、チャット履歴にも保存
+            history_text = f"（画像が投稿されました。画像の内容： {image_description}）"
+            add_to_chat_history(session_id, 'user', history_text)
+            
+            # 長期記憶にも、説明文を一つの情報として保存
+            image_source = f"image_from_user:{user_id}"
+            store_message(user_id, history_text, source=image_source)
+
+            # 処理完了をプッシュメッセージで通知
+            push_text = f"画像を記憶しました！\n\n【AIによる画像の説明】\n{image_description}"
+            line_bot_api.push_message(
+                PushMessageRequest(
+                    to=session_id,
+                    messages=[TextMessage(text=push_text)]
+                )
+            )
+            
     except Exception as e:
-        print(f"画像メッセージの受付処理中にエラーが発生しました: {e}")
+        print(f"画像処理中にエラーが発生しました: {e}")
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.push_message(
+                PushMessageRequest(
+                    to=session_id,
+                    messages=[TextMessage(text=f"画像の処理中にエラーが発生しました。")]
+                )
+            )
 
 # 【新機能】画像処理をバックグラウンドで行うための関数
 def process_image_and_notify(user_id, session_id, image_bytes):
