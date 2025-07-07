@@ -505,11 +505,8 @@ def handle_upload():
         return jsonify({'status': 'success', 'message': 'File upload received. Processing in background.'}), 200
 
     except Exception as e:
+        # 2つあったexceptを1つにまとめました
         print(f"アップロード受付中にエラーが発生しました: {e}")
-        return jsonify({'status': 'error', 'message': 'An error occurred on the server'}), 500
-
-    except Exception as e:
-        print(f"アップロード処理中にエラーが発生しました: {e}")
         return jsonify({'status': 'error', 'message': 'An error occurred on the server'}), 500
 
 if __name__ == "__main__":
