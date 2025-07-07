@@ -439,8 +439,7 @@ def process_image_and_notify(user_id, session_id, image_bytes):
 # PDF処理を裏方で行う
 def process_pdf_and_notify(pdf_bytes, filename, context_id):
     """
-    PDFのバイトデータを受け取り、テキスト抽出、DB保存、LINEへの通知を行う関数。
-    バックグラウンドのスレッドで実行される。
+    PDFのバイトデータを受け取り、テキスト抽出、★要約生成★、DB保存、LINEへの通知を行う関数。
     """
     print(f"バックグラウンドでPDF処理を開始: {filename}")
     try:
@@ -456,16 +455,34 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
         if not raw_text.strip():
             raise ValueError("PDFからテキストを抽出できませんでした。")
 
-        # 3. 既存の関数を使ってテキストを整形し、DBに保存する
-        # source_urlにはファイル名を指定して、どのファイルからの情報か分かるようにする
+        # ★★★ ここからがステップ3の追加部分 ★★★
+        # 3. Gemini APIを使って要約を作成する
+        summary = "" # 要約を格納する変数をまず用意する
+        try:
+            print("Gemini APIで要約を生成しています...")
+            # Geminiに渡す「お願い（プロンプト）」を作成
+            summarize_prompt = f"以下の文章を、重要なポイントを3点に絞って箇条書きで要約してください。\n\n---\n\n{raw_text[:8000]}" # 長いPDFの場合に備え、テキストの一部を渡す
+            
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content(summarize_prompt)
+            summary = response.text.strip()
+            print("要約の生成に成功しました。")
+        except Exception as e:
+            print(f"要約の生成中にエラーが発生しました: {e}")
+            summary = "要約の生成に失敗しました。"
+        # ★★★ ここまでがステップ3の追加部分 ★★★
+
+        # 4. 既存の関数を使ってテキストを整形し、DBに保存する
         cleaned_text = clean_text(raw_text)
         is_success = chunk_and_store_text(cleaned_text, title=filename, source_url=filename)
 
-        # 4. 処理が終わったらLINEに通知を送る
+        # 5. 処理が終わったらLINEに通知を送る（★メッセージ内容を修正★）
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             if is_success:
-                message = TextMessage(text=f"PDF「{filename}」の内容を記憶しました！")
+                # 要約を含んだ、よりリッチなメッセージを作成
+                message_text = f"PDF「{filename}」を記憶しました！\n\n【AIによる3行要約】\n{summary}"
+                message = TextMessage(text=message_text)
             else:
                 message = TextMessage(text=f"PDF「{filename}」の保存に失敗しました。")
             
@@ -473,7 +490,6 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
 
     except Exception as e:
         print(f"バックグラウンドでのPDF処理中にエラー: {e}")
-        # エラーが発生した場合もユーザーに通知する
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             message = TextMessage(text=f"PDF「{filename}」の処理中にエラーが発生しました。")
