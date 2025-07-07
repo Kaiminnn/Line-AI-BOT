@@ -11,5 +11,5 @@ beautifulsoup4
 langchain-text-splitters
 Pillow
 flask-cors
-pip install PyMuPDF
+PyMuPDF
 
