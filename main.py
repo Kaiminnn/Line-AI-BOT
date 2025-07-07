@@ -7,8 +7,11 @@ import google.generativeai as genai
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage, PushMessageRequest
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
+import threading # threading を追加
+from linebot.v3.messaging import (
+    Configuration, ApiClient, MessagingApi, MessagingApiBlob, # MessagingApiBlob を追加
+    ReplyMessageRequest, TextMessage, PushMessageRequest
+)from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from sqlalchemy import create_engine, text, Column, Integer, String, Text as AlchemyText, DateTime
 from sqlalchemy.orm import sessionmaker, declarative_base
 from pgvector.sqlalchemy import Vector
@@ -389,6 +392,10 @@ def handle_image_message(event):
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # ★★★ ここからが重要な修正点です ★★★
+        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        line_bot_blob_api = MessagingApiBlob(api_client) # コンテンツ取得用のAPIをインスタンス化
 
         try:
             # 1. まずユーザーに「処理中」であることを即座に返信する
@@ -399,14 +406,13 @@ def handle_image_message(event):
                 )
             )
 
-            # 2. LINEサーバーから画像データを取得
-            message_content = line_bot_api.get_message_content(message_id=message_id)
+            # 2. LINEサーバーから画像データを取得（正しいAPIオブジェクトから呼び出す）
+            message_content = line_bot_blob_api.get_message_content(message_id=message_id)
             image_data = b''
             for chunk in message_content:
                 image_data += chunk
             
             # 3. 時間のかかる処理を別のスレッド（バックグラウンド）で実行する
-            #    - このスレッド内では reply_token は使えないため、完了通知は Push Message で行う
             thread = threading.Thread(
                 target=process_image_and_push_result, 
                 args=(user_id, image_data)
@@ -417,7 +423,6 @@ def handle_image_message(event):
             print(f"画像メッセージの受付処理中にエラーが発生しました: {e}")
             # ここでのエラーは即時返信が失敗した場合など
             # ユーザーへの通知は試みない（無限ループを避けるため）
-
 
 def process_image_and_push_result(user_id, image_data):
     """
