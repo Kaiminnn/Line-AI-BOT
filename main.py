@@ -46,7 +46,7 @@ class Document(Base):
     id = Column(Integer, primary_key=True)
     content = Column(AlchemyText)
     embedding = Column(Vector(768))
-    source = Column(String(2048), nullable=True) # nullable=Trueに戻して安定性を確保
+    source = Column(String(2048), nullable=True)
 
 class ChatHistory(Base):
     __tablename__ = 'chat_history'
@@ -56,17 +56,13 @@ class ChatHistory(Base):
     content = Column(AlchemyText, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 Session = sessionmaker(bind=engine)
 
-# テーブルが存在しない場合に作成
-# 【修正】checkfirst=Trueを追加して、再起動時のエラーを防ぐ
 Base.metadata.create_all(engine, checkfirst=True)
 
 
-# --- ここから先のヘルパー関数群は、前回のものから大きな変更はありません ---
-
+# --- ヘルパー関数群（ここは変更なし） ---
 def scrape_website(url):
     try:
         response = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
@@ -174,19 +170,80 @@ def add_to_chat_history(session_id, role, content):
         session.close()
 
 def rerank_documents(question, documents):
-    # (この関数は変更なし)
     if not documents: return []
-    rerank_prompt = f"""...""" # 省略
-    # ... (内容は以前のものと同じ) ...
-    # (省略) ...
-    return documents[:5]
+    rerank_prompt = f"""以下の「ユーザーの質問」と、それに関連する可能性のある「資料リスト」があります。資料リストの中から、質問に答えるために本当に重要度の高い資料を、重要度順に最大5つ選び、その番号だけをカンマ区切りで出力してください。例： 3,1,5,2,4
+
+# ユーザーの質問
+{question}
+
+# 資料リスト
+"""
+    for i, doc in enumerate(documents):
+        rerank_prompt += f"【資料{i}】\n{doc.content}\n\n"
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        response = model.generate_content(rerank_prompt)
+        reranked_indices = [int(i.strip()) for i in response.text.split(',') if i.strip().isdigit()]
+        reranked_docs = [documents[i] for i in reranked_indices if i < len(documents)]
+        print(f"リランキング後のドキュメント順: {reranked_indices}")
+        return reranked_docs
+    except Exception as e:
+        print(f"リランキング中にエラーが発生しました: {e}")
+        return documents[:5]
 
 def answer_question(question, user_id, session_id):
-    # (この関数も変更なし)
-    # ... (内容は以前のものと同じ) ...
-    # (省略) ...
-    return "テスト回答" # 仮
+    history = get_chat_history(session_id)
+    rephrased_question = question
+    if history:
+        history_text = "\n".join([f"{h.role}: {h.content}" for h in history])
+        prompt = f"""以下は、ユーザーとの直近の会話履歴です。この文脈を踏まえて、最後の「新しい質問」を、データベース検索に最適な、具体的で自己完結した一つの質問に書き換えてください。もし新しい質問が既に具体的であれば、そのまま出力してください。
 
+# 会話履歴
+{history_text}
+
+# 新しい質問
+{question}
+
+# 書き換えた検索用の質問：
+"""
+        try:
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content(prompt)
+            rephrased_question = response.text.strip()
+            print(f"書き換えられた質問: {rephrased_question}")
+        except Exception as e:
+            print(f"質問の書き換え中にエラー: {e}")
+            rephrased_question = question
+
+    session = Session()
+    try:
+        question_embedding = embed_text(rephrased_question)
+        if question_embedding is None: return "質問の解析に失敗しました。"
+        candidate_docs = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(25).all()
+        if not candidate_docs: return "まだ情報が十分に蓄積されていないようです。"
+        final_results = rerank_documents(rephrased_question, candidate_docs)
+        if not final_results: return "関連性の高い情報が見つかりませんでした。"
+
+        context = "\n".join(f"- {doc.content}" for doc in final_results)
+        final_prompt = f"""以下の非常に精度の高い参考情報だけを使って、ユーザーの質問に簡潔に答えてください。
+
+# 参考情報
+{context}
+
+# 質問
+{question}
+
+# 回答
+"""
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        final_response = model.generate_content(final_prompt)
+        add_to_chat_history(session_id, 'model', final_response.text)
+        return final_response.text
+    except Exception as e:
+        print(f"質問応答中にエラーが発生しました: {e}")
+        return "申し訳ありません、応答の生成中にエラーが発生しました。"
+    finally:
+        session.close()
 
 # LINEからのWebhookを受け取るエンドポイント
 @app.route("/callback", methods=['POST'])
@@ -199,7 +256,7 @@ def callback():
         abort(400)
     return 'OK'
 
-# 【ここを大幅修正】メッセージを仕分ける、新しい受付係
+# 【ここを大幅修正】シンプルで堅牢な、新しい受付係
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     source = event.source
@@ -208,23 +265,22 @@ def handle_message(event):
     message_text = event.message.text
     reply_token = event.reply_token
 
-    # すぐに応答が必要なタスクを先に処理する
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
-        # 仕事1：「質問」なら、すぐに応答して処理を終える
+        # 仕事1：まずユーザーのメッセージをチャット履歴に保存する
+        add_to_chat_history(session_id, 'user', message_text)
+
+        # 仕事2：「質問」かどうかを最優先で判断し、そうなら素早く応答する
         if message_text.startswith(("質問：", "質問:")):
             question = message_text.replace("質問：", "", 1).replace("質問:", "", 1).strip()
-            add_to_chat_history(session_id, 'user', message_text) # 質問も履歴に保存
             answer = answer_question(question, user_id, session_id)
-            # AIの回答も履歴に保存
-            add_to_chat_history(session_id, 'model', answer)
             line_bot_api.reply_message(
                 ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=answer)])
             )
             return
 
-        # 仕事2：「DB確認」なら、すぐに応答して処理を終える
+        # 仕事3：「DB確認」なら、すぐに応答する
         elif message_text == "DB確認":
             session = Session()
             doc_count = session.query(Document).count()
@@ -235,48 +291,37 @@ def handle_message(event):
                 ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=reply_text)])
             )
             return
-    
-    # --- ここからは、すぐに応答が必要ない、裏方の作業 ---
-    
-    # 仕事3：まずユーザーのメッセージを両方のDBに記憶する
-    add_to_chat_history(session_id, 'user', message_text)
-    
-    urls = re.findall(r'https?://\S+', message_text)
-    commentary = re.sub(r'https?://\S+', '', message_text).strip()
 
-    if commentary:
-        store_message(user_id, commentary)
+        # 仕事4：上記以外（通常の会話やURL共有）の場合
+        else:
+            # ユーザーの文章部分とURLを分離
+            urls = re.findall(r'https?://\S+', message_text)
+            commentary = re.sub(r'https?://\S+', '', message_text).strip()
 
-    # 仕事4：もしURLがあれば、時間をかけて処理し、終わったらプッシュで通知
-    if urls:
-        # ユーザーには、まずメッセージを受け取ったことだけを素早く返信する
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[TextMessage(text=f"メッセージと{len(urls)}件のURL、承知しました。内容を読んで記憶しますね。")]
+            # 文章部分があれば、長期記憶に保存
+            if commentary:
+                store_message(user_id, commentary)
+
+            # URLがあれば、処理を開始したことをまず返信する（時間切れ対策）
+            if urls:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=reply_token,
+                        messages=[TextMessage(text=f"メッセージと{len(urls)}件のURL、承知しました。内容を読んで記憶しますね。")]
+                    )
                 )
-            )
-
-        # 時間のかかる処理は、返信が終わった後でゆっくり行う
-        for url in urls:
-            scraped_data = scrape_website(url)
-            if scraped_data and scraped_data['raw_text']:
-                cleaned_text = clean_text(scraped_data['raw_text'])
-                is_success = chunk_and_store_text(cleaned_text, scraped_data['title'], url)
                 
-                # 処理結果をプッシュメッセージで通知
-                with ApiClient(configuration) as api_client:
-                    line_bot_api = MessagingApi(api_client)
-                    if is_success:
-                        line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text=f"【完了】URLの内容を記憶しました！\n{url}")]))
-                    else:
-                        line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text=f"【失敗】URLの読み込み・保存に失敗しました。\n{url}")]))
-            else:
-                with ApiClient(configuration) as api_client:
-                    line_bot_api = MessagingApi(api_client)
-                    line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text=f"【失敗】URLへのアクセスに失敗しました。\n{url}")]))
+                # 時間のかかるURL処理は、返信が終わった後でゆっくり行う
+                for url in urls:
+                    scraped_data = scrape_website(url)
+                    if scraped_data and scraped_data['raw_text']:
+                        cleaned_text = clean_text(scraped_data['raw_text'])
+                        is_success = chunk_and_store_text(cleaned_text, scraped_data['title'], url)
+                        
+                        # 処理結果をプッシュメッセージで（任意で）通知
+                        # is_success の結果に応じて通知内容を変えても良い
+                    
+            # URLも質問もない、純粋な会話の場合は、ここでは返信しない（静かな記録係に徹する）
 
 
 if __name__ == "__main__":
