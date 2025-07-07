@@ -374,45 +374,83 @@ def handle_message(event):
 # 画像メッセージを処理するハンドラ
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
-    """
-    画像メッセージを受信したときの処理（タイムアウト対策版）
-    """
-    user_id = event.source.user_id
-    reply_token = event.reply_token
+    source = event.source
+    session_id = source.group_id if source.type == 'group' else source.user_id
+    user_id = source.user_id
     message_id = event.message.id
+    reply_token = event.reply_token
 
-    with ApiClient(configuration) as api_client:
-        line_bot_api = MessagingApi(api_client)
-        line_bot_blob_api = MessagingApiBlob(api_client)
-
-        try:
+    try:
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_blob_api = MessagingApiBlob(api_client)
+            
+            # 1. ユーザーに処理開始を素早く通知
+            print("ステップ1：ユーザーに応答を返信中...")
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
-                    messages=[TextMessage(text="画像を承知しました。内容を解析しますので、少しお待ちください。")]
+                    messages=[TextMessage(text="画像を認識中です...")]
                 )
             )
+            print("ステップ1：完了")
 
-            # --- ここからが修正箇所です ---
+            # 2. LINEサーバーから画像データをダウンロード
+            print("ステップ2：画像データをLINEサーバーからダウンロード中...")
+            message_content_stream = line_bot_blob_api.get_message_content(message_id=message_id)
+            print("ステップ2：完了")
             
-            # 1. LINEサーバーから画像データを取得
-            message_content = line_bot_blob_api.get_message_content(message_id=message_id)
+            # 3. ダウンロードしたデータをメモリ上で扱う
+            print("ステップ3：画像データをメモリに書き込み中...")
+            image_data = BytesIO()
+            # .iter_content() を使うのが、LINE SDKの仕様上、最も安全で確実な方法です
+            for chunk in message_content_stream.iter_content():
+                image_data.write(chunk)
+            image_data.seek(0)
+            print("ステップ3：完了")
 
-            # 2.「.content」をつけるだけで、全ての画像データを一括で受け取れます
-            image_data = message_content.content
+            # 4. Pillowで画像として開く
+            print("ステップ4：Pillowで画像として開封中...")
+            img = Image.open(image_data)
+            print("ステップ4：完了")
+
+            # 5. Geminiに画像を渡して、説明を生成させる
+            print("ステップ5：Geminiに画像の説明を依頼中...")
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content(["この画像を日本語で詳しく、見たままに説明してください。", img])
+            image_description = response.text.strip()
+            print("ステップ5：完了")
+
+            # 6. 生成された説明文を短期・長期記憶に保存
+            print("ステップ6：AIの回答をDBに保存中...")
+            history_text = f"（画像が投稿されました。画像の内容： {image_description}）"
+            add_to_chat_history(session_id, 'user', history_text)
             
-            # --- 修正箇所はここまで ---
+            image_source = f"image_from_user:{user_id}"
+            store_message(user_id, history_text, source=image_source)
+            print("ステップ6：完了")
 
-
-            # 3. 時間のかかる処理を別のスレッド（バックグラウンド）で実行する
-            thread = threading.Thread(
-                target=process_image_and_push_result, 
-                args=(user_id, image_data)
+            # 7. 最終的な完了報告をユーザーに送信
+            print("ステップ7：最終報告をユーザーにプッシュ通知中...")
+            push_text = f"画像を記憶しました！\n\n【AIによる画像の説明】\n{image_description}"
+            line_bot_api.push_message(
+                PushMessageRequest(
+                    to=session_id,
+                    messages=[TextMessage(text=push_text)]
+                )
             )
-            thread.start()
-
-        except Exception as e:
-            print(f"画像メッセージの受付処理中にエラーが発生しました: {e}")
+            print("ステップ7：完了。全ての処理が成功しました。")
+            
+    except Exception as e:
+        print(f"画像メッセージの受付処理中にエラーが発生しました: {e}")
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.push_message(
+                PushMessageRequest(
+                    to=session_id,
+                    messages=[TextMessage(text=f"画像の処理中にエラーが発生しました。")]
+                )
+            )
 
 def process_image_and_push_result(user_id, image_data):
     """
