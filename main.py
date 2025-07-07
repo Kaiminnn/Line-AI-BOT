@@ -4,10 +4,16 @@ import requests
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 from flask import Flask, request, abort
+
+# 【追加】画像処理に必要なライブラリ
+from io import BytesIO
+from PIL import Image
+
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage, PushMessageRequest
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent # 【追加】ImageMessageContentをインポート
+
 from sqlalchemy import create_engine, text, Column, Integer, String, Text as AlchemyText, DateTime
 from sqlalchemy.orm import sessionmaker, declarative_base
 from pgvector.sqlalchemy import Vector
@@ -58,7 +64,6 @@ class ChatHistory(Base):
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 Session = sessionmaker(bind=engine)
-
 Base.metadata.create_all(engine, checkfirst=True)
 
 
@@ -214,7 +219,7 @@ def answer_question(question, user_id, session_id):
         except Exception as e:
             print(f"質問の書き換え中にエラー: {e}")
             rephrased_question = question
-
+    
     session = Session()
     try:
         question_embedding = embed_text(rephrased_question)
@@ -245,6 +250,7 @@ def answer_question(question, user_id, session_id):
     finally:
         session.close()
 
+
 # LINEからのWebhookを受け取るエンドポイント
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -256,7 +262,7 @@ def callback():
         abort(400)
     return 'OK'
 
-# 【ここを大幅修正】シンプルで堅牢な、新しい受付係
+# テキストメッセージを処理する受付係
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     source = event.source
@@ -268,10 +274,8 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
-        # 仕事1：まずユーザーのメッセージをチャット履歴に保存する
         add_to_chat_history(session_id, 'user', message_text)
 
-        # 仕事2：「質問」かどうかを最優先で判断し、そうなら素早く応答する
         if message_text.startswith(("質問：", "質問:")):
             question = message_text.replace("質問：", "", 1).replace("質問:", "", 1).strip()
             answer = answer_question(question, user_id, session_id)
@@ -280,7 +284,6 @@ def handle_message(event):
             )
             return
 
-        # 仕事3：「DB確認」なら、すぐに応答する
         elif message_text == "DB確認":
             session = Session()
             doc_count = session.query(Document).count()
@@ -291,37 +294,115 @@ def handle_message(event):
                 ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=reply_text)])
             )
             return
-
-        # 仕事4：上記以外（通常の会話やURL共有）の場合
+        
         else:
-            # ユーザーの文章部分とURLを分離
             urls = re.findall(r'https?://\S+', message_text)
             commentary = re.sub(r'https?://\S+', '', message_text).strip()
 
-            # 文章部分があれば、長期記憶に保存
             if commentary:
                 store_message(user_id, commentary)
-
-            # URLがあれば、処理を開始したことをまず返信する（時間切れ対策）
+            
             if urls:
-                line_bot_api.reply_message(
-                    ReplyMessageRequest(
-                        reply_token=reply_token,
-                        messages=[TextMessage(text=f"メッセージと{len(urls)}件のURL、承知しました。内容を読んで記憶しますね。")]
+                try:
+                    line_bot_api.reply_message(
+                        ReplyMessageRequest(
+                            reply_token=reply_token,
+                            messages=[TextMessage(text=f"メッセージと{len(urls)}件のURL、承知しました。内容を読んで記憶しますね。")]
+                        )
                     )
-                )
+                except Exception:
+                    # 既に他の処理で返信済み（コメントとURLが両方ある場合など）でもエラーにならないように
+                    pass
                 
-                # 時間のかかるURL処理は、返信が終わった後でゆっくり行う
                 for url in urls:
                     scraped_data = scrape_website(url)
                     if scraped_data and scraped_data['raw_text']:
                         cleaned_text = clean_text(scraped_data['raw_text'])
                         is_success = chunk_and_store_text(cleaned_text, scraped_data['title'], url)
                         
-                        # 処理結果をプッシュメッセージで（任意で）通知
-                        # is_success の結果に応じて通知内容を変えても良い
-                    
-            # URLも質問もない、純粋な会話の場合は、ここでは返信しない（静かな記録係に徹する）
+                        if is_success:
+                            line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"【完了】URLの内容を記憶しました！\n{url}")]))
+                        else:
+                            line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"【失敗】URLの読み込み・保存に失敗しました。\n{url}")]))
+                    else:
+                        line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"【失敗】URLへのアクセスに失敗しました。\n{url}")]))
+            
+            elif commentary:
+                try:
+                    line_bot_api.reply_message(
+                        ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text="記憶しました！")])
+                    )
+                except Exception:
+                    pass
+
+# --- 【ここからが新機能です】 ---
+# 画像メッセージを処理する、新しい専門の受付係
+@handler.add(MessageEvent, message=ImageMessageContent)
+def handle_image_message(event):
+    source = event.source
+    session_id = source.group_id if source.type == 'group' else source.user_id
+    user_id = source.user_id
+    message_id = event.message.id
+    reply_token = event.reply_token
+
+    try:
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            
+            # まずユーザーに、画像の処理を開始したことを素早く知らせる
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="画像を認識中です...")]
+                )
+            )
+
+            # LINEのサーバーから画像データをダウンロード
+            message_content = line_bot_api.get_message_content(message_id=message_id)
+            
+            # Geminiに画像を渡せる形式に変換
+            img = Image.open(BytesIO(message_content.read()))
+
+            # Geminiに画像を渡して、その説明を生成させる
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content(["この画像を日本語で詳しく、見たままに説明してください。", img])
+            image_description = response.text.strip()
+
+            # ユーザーの発言として、チャット履歴にも保存
+            history_text = f"（画像が投稿されました。画像の内容： {image_description}）"
+            add_to_chat_history(session_id, 'user', history_text)
+            
+            # 長期記憶にも、説明文を一つの情報として保存
+            image_source = f"image_from_user:{user_id}"
+            embedding = embed_text(history_text)
+            if embedding:
+                session = Session()
+                document = Document(content=history_text, embedding=embedding, source=image_source)
+                session.add(document)
+                session.commit()
+                check_and_prune_db(session)
+                session.close()
+
+            # 処理完了をプッシュメッセージで通知
+            push_text = f"画像を記憶しました！\n\n【AIによる画像の説明】\n{image_description}"
+            # 送信先をsession_idにすることで、グループでも個人でも対応
+            line_bot_api.push_message(
+                PushMessageRequest(
+                    to=session_id,
+                    messages=[TextMessage(text=push_text)]
+                )
+            )
+            
+    except Exception as e:
+        print(f"画像処理中にエラーが発生しました: {e}")
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.push_message(
+                PushMessageRequest(
+                    to=session_id,
+                    messages=[TextMessage(text=f"画像の処理中にエラーが発生しました。")]
+                )
+            )
 
 
 if __name__ == "__main__":

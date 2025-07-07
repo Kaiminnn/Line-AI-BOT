@@ -6,7 +6,7 @@ sqlalchemy
 pgvector
 python-dotenv
 gunicorn
-Pillow
 requests
 beautifulsoup4
 langchain-text-splitters
+Pillow
