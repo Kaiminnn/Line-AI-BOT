@@ -70,11 +70,6 @@ Base.metadata.create_all(engine, checkfirst=True)
 
 
 # --- ここから先のヘルパー関数群は、以前の最終版から変更ありません ---
-# （scrape_website, clean_text, chunk_and_store_text, embed_text, 
-#   store_message, check_and_prune_db, get_chat_history, 
-#   add_to_chat_history, rerank_documents, answer_question）
-# これらの関数は、正しく動作していたので、そのまま使います。
-# 以下に完全なコードを記載します。
 
 def scrape_website(url):
     try:
@@ -327,7 +322,7 @@ def handle_text_message(event):
                 except Exception:
                     pass
 
-# 【新機能】URL処理をバックグラウンドで行うための関数
+# URL処理をバックグラウンドで行うための関数
 def process_url_and_notify(url, session_id):
     print(f"バックグラウンド処理開始: {url}")
     scraped_data = scrape_website(url)
@@ -408,7 +403,7 @@ def handle_image_message(event):
                 )
             )
 
-# 【新機能】画像処理をバックグラウンドで行うための関数
+# 画像処理をバックグラウンドで行うための関数
 def process_image_and_notify(user_id, session_id, image_bytes):
     print("バックグラウンドで画像処理を開始します。")
     try:
