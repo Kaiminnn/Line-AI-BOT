@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from datetime import datetime, timezone
 from flask import jsonify # FlaskでJSON形式の応答を返すために追加
-
+from flask_cors import CORS # ★この行を追加
 
 # .envファイルから環境変数を読み込む
 load_dotenv()
@@ -40,6 +40,7 @@ MAX_CHAT_HISTORY = 10
 
 # Flaskアプリの初期化
 app = Flask(__name__)
+CORS(app) 
 
 # LINE Bot SDKの初期化
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
