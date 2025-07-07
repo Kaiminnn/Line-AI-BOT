@@ -1,25 +1,28 @@
 import os
-import io # ← これを追加
+import io
 import re
+import threading
+from datetime import datetime, timezone
+
 import requests
 from bs4 import BeautifulSoup
 import google.generativeai as genai
+from dotenv import load_dotenv
 from flask import Flask, request, abort
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
-import threading # threading を追加
 from linebot.v3.messaging import (
-    Configuration, ApiClient, MessagingApi, MessagingApiBlob, # MessagingApiBlob を追加
+    Configuration, ApiClient, MessagingApi, MessagingApiBlob,
     ReplyMessageRequest, TextMessage, PushMessageRequest
-)from linebot.v3.webhooks import MessageEvent, TextMessageContent
+)
+from linebot.v3.webhooks import (
+    MessageEvent, TextMessageContent, ImageMessageContent
+)
+from pgvector.sqlalchemy import Vector
+from PIL import Image
 from sqlalchemy import create_engine, text, Column, Integer, String, Text as AlchemyText, DateTime
 from sqlalchemy.orm import sessionmaker, declarative_base
-from pgvector.sqlalchemy import Vector
-from dotenv import load_dotenv
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from datetime import datetime, timezone
-from PIL import Image
-from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent # ImageMessageContentを追加
 
 # .envファイルから環境変数を読み込む
 load_dotenv()
