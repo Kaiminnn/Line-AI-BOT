@@ -22,6 +22,8 @@ from pgvector.sqlalchemy import Vector
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from datetime import datetime, timezone
+from flask import jsonify # FlaskでJSON形式の応答を返すために追加
+
 
 # .envファイルから環境変数を読み込む
 load_dotenv()
@@ -430,6 +432,37 @@ def process_image_and_notify(user_id, session_id, image_bytes):
             line_bot_api = MessagingApi(api_client)
             line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"画像の処理中にエラーが発生しました。")]))
 
+# PDF読み取り ---
+@app.route('/upload', methods=['POST'])
+def handle_upload():
+    """LIFFからのファイルアップロードを処理する"""
+    try:
+        # LIFFから送られてきたデータを確認
+        if 'pdf_file' not in request.files:
+            return jsonify({'status': 'error', 'message': 'File part is missing'}), 400
+
+        file = request.files['pdf_file']
+        context_id = request.form.get('contextId') # どのグループ/トークルームかを示すID
+
+        if file.filename == '':
+            return jsonify({'status': 'error', 'message': 'No selected file'}), 400
+
+        if file and context_id:
+            # ★ステップ1の目標★
+            # ファイルとIDを正常に受け取れたことをサーバーのログに出力する
+            print("--- PDF受信成功！ ---")
+            print(f"ファイル名: {file.filename}")
+            print(f"送信元のID: {context_id}")
+            print("--------------------")
+            
+            # ここに、今後PDFを処理するコードを書いていく（ステップ2以降）
+
+            # LIFF画面に成功したことを伝える
+            return jsonify({'status': 'success', 'message': 'File received successfully'}), 200
+
+    except Exception as e:
+        print(f"アップロード処理中にエラーが発生しました: {e}")
+        return jsonify({'status': 'error', 'message': 'An error occurred on the server'}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
