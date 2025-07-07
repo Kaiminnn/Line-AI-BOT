@@ -1,4 +1,5 @@
 import os
+import io # ← これを追加
 import re
 import requests
 from bs4 import BeautifulSoup
@@ -376,10 +377,11 @@ def handle_message(event):
                         # is_success の結果に応じて通知内容を変えても良い
                     
             # URLも質問もない、純粋な会話の場合は、ここでは返信しない（静かな記録係に徹する）
+
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
     """
-    画像メッセージを受信したときの処理
+    画像メッセージを受信したときの処理（タイムアウト対策版）
     """
     user_id = event.source.user_id
     reply_token = event.reply_token
@@ -389,37 +391,54 @@ def handle_image_message(event):
         line_bot_api = MessagingApi(api_client)
 
         try:
-            # LINEサーバーから画像データを取得
+            # 1. まずユーザーに「処理中」であることを即座に返信する
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="画像を承知しました。内容を解析しますので、少しお待ちください。")]
+                )
+            )
+
+            # 2. LINEサーバーから画像データを取得
             message_content = line_bot_api.get_message_content(message_id=message_id)
             image_data = b''
             for chunk in message_content:
                 image_data += chunk
             
-            # 画像処理と保存を実行
-            is_success = describe_and_store_image(user_id, image_data)
-
-            # ユーザーに応答
-            if is_success:
-                reply_text = "画像を記憶しました！この画像について質問があれば、いつでもどうぞ。"
-            else:
-                reply_text = "すみません、画像の処理に失敗しました。"
-            
-            line_bot_api.reply_message(
-                ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=reply_text)])
+            # 3. 時間のかかる処理を別のスレッド（バックグラウンド）で実行する
+            #    - このスレッド内では reply_token は使えないため、完了通知は Push Message で行う
+            thread = threading.Thread(
+                target=process_image_and_push_result, 
+                args=(user_id, image_data)
             )
+            thread.start()
 
         except Exception as e:
-            print(f"画像メッセージの処理中にエラーが発生しました: {e}")
-            # エラーが発生した場合も、ユーザーには応答を試みる
-            try:
-                line_bot_api.reply_message(
-                    ReplyMessageRequest(
-                        reply_token=reply_token, 
-                        messages=[TextMessage(text="画像の受け取りでエラーが発生しました。")]
-                    )
-                )
-            except Exception as api_error:
-                print(f"画像エラーの返信中にさらにエラーが発生: {api_error}")
+            print(f"画像メッセージの受付処理中にエラーが発生しました: {e}")
+            # ここでのエラーは即時返信が失敗した場合など
+            # ユーザーへの通知は試みない（無限ループを避けるため）
+
+
+def process_image_and_push_result(user_id, image_data):
+    """
+    【新設】バックグラウンドで画像処理と結果通知を行う関数
+    """
+    is_success = describe_and_store_image(user_id, image_data)
+
+    if is_success:
+        result_text = "先ほどの画像を記憶しました！この画像について質問があれば、いつでもどうぞ。"
+    else:
+        result_text = "申し訳ありません、先ほどの画像の解析・保存に失敗しました。"
+
+    # ApiClientをこの関数内で再度作成してPush Messageを送る
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+        line_bot_api.push_message(
+            PushMessageRequest(
+                to=user_id,
+                messages=[TextMessage(text=result_text)]
+            )
+        )
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
