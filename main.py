@@ -4,39 +4,43 @@ import requests
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 from flask import Flask, request, abort
-
-from io import BytesIO
-from PIL import Image
-
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.messaging import (
-    Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage, PushMessageRequest
-)
-from linebot.v3.messaging.api.messaging_api_blob import MessagingApiBlob
-from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent
-
+from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage, PushMessageRequest
+from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from sqlalchemy import create_engine, text, Column, Integer, String, Text as AlchemyText, DateTime
 from sqlalchemy.orm import sessionmaker, declarative_base
 from pgvector.sqlalchemy import Vector
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from datetime import datetime, timezone
+from PIL import Image
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent # ImageMessageContentを追加
 
 # .envファイルから環境変数を読み込む
 load_dotenv()
 
-# （...ここから先の環境変数やデータベース設定のコードは、変更ありません...）
+# 環境変数からキーなどを取得
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 DATABASE_URL = os.environ.get('DATABASE_URL')
+
+# 保存するメッセージの上限数
 MAX_DOCUMENTS = 20000
 MAX_CHAT_HISTORY = 10 
+
+# Flaskアプリの初期化
 app = Flask(__name__)
+
+# LINE Bot SDKの初期化
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
+
+# Geminiの初期化
 genai.configure(api_key=GEMINI_API_KEY)
+
+# データベース設定
 Base = declarative_base()
 
 class Document(Base):
@@ -56,10 +60,63 @@ class ChatHistory(Base):
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 Session = sessionmaker(bind=engine)
+
 Base.metadata.create_all(engine, checkfirst=True)
 
 
-# --- ヘルパー関数群 ---
+# --- ヘルパー関数群---
+def describe_and_store_image(user_id, image_data):
+    """
+    画像データを受け取り、内容を説明する文章を生成してDBに保存する関数
+    """
+    try:
+        img = Image.open(io.BytesIO(image_data))
+        model = genai.GenerativeModel('gemini-1.5-flash-latest') # Vision機能を持つモデルを指定
+
+        # Geminiに渡すプロンプト（目的に応じて調整可能）
+        prompt = [
+            "この画像はユーザーから提供された記憶すべき情報です。画像の内容を、後から検索しやすいように客観的な事実に基づいて、詳細な日本語の文章で説明してください。",
+            img,
+        ]
+        
+        response = model.generate_content(prompt)
+        image_description = response.text.strip()
+
+        if not image_description:
+            print("画像の分析に失敗しました。説明文が空です。")
+            return False
+
+        print(f"生成された画像の説明文: {image_description[:100]}...")
+
+        # 生成した説明文を、通常のメッセージと同様にDBに保存
+        session = Session()
+        try:
+            source_id = f"image_from_user:{user_id}"
+            # 説明文にプレフィックスを付けて、画像由来の情報だと分かりやすくする
+            content_to_store = f"ユーザーが送信した画像についての説明：\n{image_description}"
+            embedding = embed_text(content_to_store)
+            
+            if embedding:
+                document = Document(content=content_to_store, embedding=embedding, source=source_id)
+                session.add(document)
+                session.commit()
+                print(f"ユーザー({user_id[:5]})の画像情報をDBに保存しました。")
+                check_and_prune_db(session)
+                return True
+            else:
+                return False
+
+        except Exception as e:
+            print(f"画像情報のDB保存中にエラーが発生しました: {e}")
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    except Exception as e:
+        print(f"画像の処理またはGemini API呼び出し中にエラーが発生しました: {e}")
+        return False
+
 def scrape_website(url):
     try:
         response = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
@@ -118,19 +175,17 @@ def embed_text(text_to_embed):
         print(f"ベクトル化中にエラーが発生しました: {e}")
         return None
 
-# 【ここを修正】sourceを引数として受け取れるように変更
-def store_message(user_id, message_text, source=None):
+def store_message(user_id, message_text):
     if not message_text or message_text.isspace(): return
     session = Session()
     try:
-        # sourceが指定されていなければ、ユーザーIDから作成
-        source_id = source if source else f"user:{user_id}"
+        source_id = f"user:{user_id}"
         embedding = embed_text(message_text)
         if embedding:
             document = Document(content=message_text, embedding=embedding, source=source_id)
             session.add(document)
             session.commit()
-            print(f"情報をDBに保存しました。source: {source_id}")
+            print(f"ユーザー({user_id[:5]})のメッセージをDBに保存しました。")
             check_and_prune_db(session)
     except Exception as e:
         print(f"データベース処理中にエラーが発生しました: {e}")
@@ -139,7 +194,6 @@ def store_message(user_id, message_text, source=None):
         session.close()
 
 def check_and_prune_db(session):
-    # (省略...内容は前回と同じ)
     total_count = session.query(Document).count()
     if total_count > MAX_DOCUMENTS:
         items_to_delete_count = total_count - MAX_DOCUMENTS
@@ -150,7 +204,6 @@ def check_and_prune_db(session):
         print(f"上限を超えたため、古いメッセージを {items_to_delete_count} 件削除しました。")
 
 def get_chat_history(session_id):
-    # (省略...内容は前回と同じ)
     session = Session()
     try:
         history = session.query(ChatHistory).filter(ChatHistory.session_id == session_id).order_by(ChatHistory.created_at.desc()).limit(MAX_CHAT_HISTORY).all()
@@ -159,7 +212,6 @@ def get_chat_history(session_id):
         session.close()
 
 def add_to_chat_history(session_id, role, content):
-    # (省略...内容は前回と同じ)
     session = Session()
     try:
         history_entry = ChatHistory(session_id=session_id, role=role, content=content)
@@ -172,16 +224,80 @@ def add_to_chat_history(session_id, role, content):
         session.close()
 
 def rerank_documents(question, documents):
-    # (省略...内容は前回と同じ)
     if not documents: return []
-    rerank_prompt = f"""...""" # 省略
-    # ...
-    return documents[:5]
+    rerank_prompt = f"""以下の「ユーザーの質問」と、それに関連する可能性のある「資料リスト」があります。資料リストの中から、質問に答えるために本当に重要度の高い資料を、重要度順に最大5つ選び、その番号だけをカンマ区切りで出力してください。例： 3,1,5,2,4
+
+# ユーザーの質問
+{question}
+
+# 資料リスト
+"""
+    for i, doc in enumerate(documents):
+        rerank_prompt += f"【資料{i}】\n{doc.content}\n\n"
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        response = model.generate_content(rerank_prompt)
+        reranked_indices = [int(i.strip()) for i in response.text.split(',') if i.strip().isdigit()]
+        reranked_docs = [documents[i] for i in reranked_indices if i < len(documents)]
+        print(f"リランキング後のドキュメント順: {reranked_indices}")
+        return reranked_docs
+    except Exception as e:
+        print(f"リランキング中にエラーが発生しました: {e}")
+        return documents[:5]
 
 def answer_question(question, user_id, session_id):
-    # (省略...内容は前回と同じ)
-    # ...
-    return "テスト回答" # 仮の回答
+    history = get_chat_history(session_id)
+    rephrased_question = question
+    if history:
+        history_text = "\n".join([f"{h.role}: {h.content}" for h in history])
+        prompt = f"""以下は、ユーザーとの直近の会話履歴です。この文脈を踏まえて、最後の「新しい質問」を、データベース検索に最適な、具体的で自己完結した一つの質問に書き換えてください。もし新しい質問が既に具体的であれば、そのまま出力してください。
+
+# 会話履歴
+{history_text}
+
+# 新しい質問
+{question}
+
+# 書き換えた検索用の質問：
+"""
+        try:
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content(prompt)
+            rephrased_question = response.text.strip()
+            print(f"書き換えられた質問: {rephrased_question}")
+        except Exception as e:
+            print(f"質問の書き換え中にエラー: {e}")
+            rephrased_question = question
+
+    session = Session()
+    try:
+        question_embedding = embed_text(rephrased_question)
+        if question_embedding is None: return "質問の解析に失敗しました。"
+        candidate_docs = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(25).all()
+        if not candidate_docs: return "まだ情報が十分に蓄積されていないようです。"
+        final_results = rerank_documents(rephrased_question, candidate_docs)
+        if not final_results: return "関連性の高い情報が見つかりませんでした。"
+
+        context = "\n".join(f"- {doc.content}" for doc in final_results)
+        final_prompt = f"""以下の非常に精度の高い参考情報だけを使って、ユーザーの質問に簡潔に答えてください。
+
+# 参考情報
+{context}
+
+# 質問
+{question}
+
+# 回答
+"""
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        final_response = model.generate_content(final_prompt)
+        add_to_chat_history(session_id, 'model', final_response.text)
+        return final_response.text
+    except Exception as e:
+        print(f"質問応答中にエラーが発生しました: {e}")
+        return "申し訳ありません、応答の生成中にエラーが発生しました。"
+    finally:
+        session.close()
 
 # LINEからのWebhookを受け取るエンドポイント
 @app.route("/callback", methods=['POST'])
@@ -194,79 +310,116 @@ def callback():
         abort(400)
     return 'OK'
 
-# テキストメッセージを処理する受付係
+# 【ここを大幅修正】シンプルで堅牢な、新しい受付係
 @handler.add(MessageEvent, message=TextMessageContent)
-def handle_text_message(event):
-    # (この関数は変更なし)
-    pass # 省略...内容は前回と同じ
-
-# 画像メッセージを処理する受付係
-@handler.add(MessageEvent, message=ImageMessageContent)
-def handle_image_message(event):
+def handle_message(event):
     source = event.source
     session_id = source.group_id if source.type == 'group' else source.user_id
     user_id = source.user_id
-    message_id = event.message.id
+    message_text = event.message.text
     reply_token = event.reply_token
 
-    try:
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            line_bot_blob_api = MessagingApiBlob(api_client)
-            
-            # まずユーザーに、画像の処理を開始したことを素早く知らせる
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+
+        # 仕事1：まずユーザーのメッセージをチャット履歴に保存する
+        add_to_chat_history(session_id, 'user', message_text)
+
+        # 仕事2：「質問」かどうかを最優先で判断し、そうなら素早く応答する
+        if message_text.startswith(("質問：", "質問:")):
+            question = message_text.replace("質問：", "", 1).replace("質問:", "", 1).strip()
+            answer = answer_question(question, user_id, session_id)
             line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[TextMessage(text="画像を認識中です...")]
+                ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=answer)])
+            )
+            return
+
+        # 仕事3：「DB確認」なら、すぐに応答する
+        elif message_text == "DB確認":
+            session = Session()
+            doc_count = session.query(Document).count()
+            history_count = session.query(ChatHistory).count()
+            reply_text = f"長期記憶(Documents)の件数: {doc_count} 件\n短期記憶(ChatHistory)の件数: {history_count} 件"
+            session.close()
+            line_bot_api.reply_message(
+                ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=reply_text)])
+            )
+            return
+
+        # 仕事4：上記以外（通常の会話やURL共有）の場合
+        else:
+            # ユーザーの文章部分とURLを分離
+            urls = re.findall(r'https?://\S+', message_text)
+            commentary = re.sub(r'https?://\S+', '', message_text).strip()
+
+            # 文章部分があれば、長期記憶に保存
+            if commentary:
+                store_message(user_id, commentary)
+
+            # URLがあれば、処理を開始したことをまず返信する（時間切れ対策）
+            if urls:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=reply_token,
+                        messages=[TextMessage(text=f"メッセージと{len(urls)}件のURL、承知しました。内容を読んで記憶しますね。")]
+                    )
                 )
+                
+                # 時間のかかるURL処理は、返信が終わった後でゆっくり行う
+                for url in urls:
+                    scraped_data = scrape_website(url)
+                    if scraped_data and scraped_data['raw_text']:
+                        cleaned_text = clean_text(scraped_data['raw_text'])
+                        is_success = chunk_and_store_text(cleaned_text, scraped_data['title'], url)
+                        
+                        # 処理結果をプッシュメッセージで（任意で）通知
+                        # is_success の結果に応じて通知内容を変えても良い
+                    
+            # URLも質問もない、純粋な会話の場合は、ここでは返信しない（静かな記録係に徹する）
+@handler.add(MessageEvent, message=ImageMessageContent)
+def handle_image_message(event):
+    """
+    画像メッセージを受信したときの処理
+    """
+    user_id = event.source.user_id
+    reply_token = event.reply_token
+    message_id = event.message.id
+
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+
+        try:
+            # LINEサーバーから画像データを取得
+            message_content = line_bot_api.get_message_content(message_id=message_id)
+            image_data = b''
+            for chunk in message_content:
+                image_data += chunk
+            
+            # 画像処理と保存を実行
+            is_success = describe_and_store_image(user_id, image_data)
+
+            # ユーザーに応答
+            if is_success:
+                reply_text = "画像を記憶しました！この画像について質問があれば、いつでもどうぞ。"
+            else:
+                reply_text = "すみません、画像の処理に失敗しました。"
+            
+            line_bot_api.reply_message(
+                ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=reply_text)])
             )
 
-            # 【ここが修正点】LINEのサーバーから画像データを正しくダウンロードする
-            message_content_stream = line_bot_blob_api.get_message_content(message_id=message_id)
-            
-            # ダウンロードしたデータをメモリ上で扱うための正しい作法
-            image_data = BytesIO()
-            for chunk in message_content_stream.iter_content():
-                image_data.write(chunk)
-            image_data.seek(0)
-
-            # これで、Pillowが正しく画像を読み込める
-            img = Image.open(image_data)
-
-            # Geminiに画像を渡して、その説明を生成させる
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            response = model.generate_content(["この画像を日本語で詳しく、見たままに説明してください。", img])
-            image_description = response.text.strip()
-
-            # ユーザーの発言として、チャット履歴にも保存
-            history_text = f"（画像が投稿されました。画像の内容： {image_description}）"
-            add_to_chat_history(session_id, 'user', history_text)
-            
-            # 長期記憶にも、説明文を一つの情報として保存
-            image_source = f"image_from_user:{user_id}"
-            store_message(user_id, history_text, source=image_source)
-
-            # 処理完了をプッシュメッセージで通知
-            push_text = f"画像を記憶しました！\n\n【AIによる画像の説明】\n{image_description}"
-            line_bot_api.push_message(
-                PushMessageRequest(
-                    to=session_id,
-                    messages=[TextMessage(text=push_text)]
+        except Exception as e:
+            print(f"画像メッセージの処理中にエラーが発生しました: {e}")
+            # エラーが発生した場合も、ユーザーには応答を試みる
+            try:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=reply_token, 
+                        messages=[TextMessage(text="画像の受け取りでエラーが発生しました。")]
+                    )
                 )
-            )
-            
-    except Exception as e:
-        print(f"画像処理中にエラーが発生しました: {e}")
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            line_bot_api.push_message(
-                PushMessageRequest(
-                    to=session_id,
-                    messages=[TextMessage(text=f"画像の処理中にエラーが発生しました。")]
-                )
-            )
-
+            except Exception as api_error:
+                print(f"画像エラーの返信中にさらにエラーが発生: {api_error}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
