@@ -22,8 +22,11 @@ from pgvector.sqlalchemy import Vector
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from datetime import datetime, timezone
-from flask import jsonify # FlaskでJSON形式の応答を返すために追加
-from flask_cors import CORS # ★この行を追加
+from flask import jsonify 
+from flask_cors import CORS
+
+import threading # 時間のかかる処理をバックグラウンドで行うために追加
+import fitz      # PyMuPDFライブラリ。PDFのテキストを抽出するために使用
 
 # .envファイルから環境変数を読み込む
 load_dotenv()
@@ -433,33 +436,77 @@ def process_image_and_notify(user_id, session_id, image_bytes):
             line_bot_api = MessagingApi(api_client)
             line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"画像の処理中にエラーが発生しました。")]))
 
+# PDF処理を裏方で行う
+def process_pdf_and_notify(pdf_bytes, filename, context_id):
+    """
+    PDFのバイトデータを受け取り、テキスト抽出、DB保存、LINEへの通知を行う関数。
+    バックグラウンドのスレッドで実行される。
+    """
+    print(f"バックグラウンドでPDF処理を開始: {filename}")
+    try:
+        # 1. 受け取ったバイトデータからPDFを開く
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        
+        # 2. 全ページのテキストを抽出する
+        raw_text = ""
+        for page in doc:
+            raw_text += page.get_text()
+        doc.close()
+
+        if not raw_text.strip():
+            raise ValueError("PDFからテキストを抽出できませんでした。")
+
+        # 3. 既存の関数を使ってテキストを整形し、DBに保存する
+        # source_urlにはファイル名を指定して、どのファイルからの情報か分かるようにする
+        cleaned_text = clean_text(raw_text)
+        is_success = chunk_and_store_text(cleaned_text, title=filename, source_url=filename)
+
+        # 4. 処理が終わったらLINEに通知を送る
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            if is_success:
+                message = TextMessage(text=f"PDF「{filename}」の内容を記憶しました！")
+            else:
+                message = TextMessage(text=f"PDF「{filename}」の保存に失敗しました。")
+            
+            line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
+
+    except Exception as e:
+        print(f"バックグラウンドでのPDF処理中にエラー: {e}")
+        # エラーが発生した場合もユーザーに通知する
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            message = TextMessage(text=f"PDF「{filename}」の処理中にエラーが発生しました。")
+            line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
+
 # PDF読み取り ---
 @app.route('/upload', methods=['POST'])
 def handle_upload():
-    """LIFFからのファイルアップロードを処理する"""
+    """LIFFからのファイルアップロードを受け取り、バックグラウンド処理を開始する"""
     try:
-        # LIFFから送られてきたデータを確認
         if 'pdf_file' not in request.files:
             return jsonify({'status': 'error', 'message': 'File part is missing'}), 400
 
         file = request.files['pdf_file']
-        context_id = request.form.get('contextId') # どのグループ/トークルームかを示すID
+        context_id = request.form.get('contextId')
 
-        if file.filename == '':
-            return jsonify({'status': 'error', 'message': 'No selected file'}), 400
+        if file.filename == '' or not context_id:
+            return jsonify({'status': 'error', 'message': 'File or contextId is missing'}), 400
 
-        if file and context_id:
-            # ★ステップ1の目標★
-            # ファイルとIDを正常に受け取れたことをサーバーのログに出力する
-            print("--- PDF受信成功！ ---")
-            print(f"ファイル名: {file.filename}")
-            print(f"送信元のID: {context_id}")
-            print("--------------------")
-            
-            # ここに、今後PDFを処理するコードを書いていく（ステップ2以降）
+        # ファイルの中身をバイトデータとして読み込む
+        pdf_bytes = file.read()
+        filename = file.filename
 
-            # LIFF画面に成功したことを伝える
-            return jsonify({'status': 'success', 'message': 'File received successfully'}), 200
+        # 時間のかかる処理をバックグラウンドのスレッドで実行する
+        thread = threading.Thread(target=process_pdf_and_notify, args=(pdf_bytes, filename, context_id))
+        thread.start()
+
+        # LIFF画面にはすぐに「受け付けたよ」と応答を返す
+        return jsonify({'status': 'success', 'message': 'File upload received. Processing in background.'}), 200
+
+    except Exception as e:
+        print(f"アップロード受付中にエラーが発生しました: {e}")
+        return jsonify({'status': 'error', 'message': 'An error occurred on the server'}), 500
 
     except Exception as e:
         print(f"アップロード処理中にエラーが発生しました: {e}")
