@@ -251,6 +251,13 @@ def handle_message(event):
                 else:
                     line_bot_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text=f"【失敗】URLへのアクセスに失敗しました。\n{url}")]))
 
-# （以降のコードは、以前のものから変更はありません）
-# ...（URLやテキストを記憶する関数など）...
-# 上記のコードには、必要な全ての関数が含まれています。
+
+        elif commentary:
+             # URLがなく、純粋な会話だった場合は、ここで返信する（任意）
+            pass
+        else:
+            # URLも文章もない（スタンプなど）の場合は何もしない
+            pass
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
