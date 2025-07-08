@@ -357,7 +357,7 @@ def handle_text_message(event):
                     thread.start()
 
 
-# URL処理をバックグラウンドで行うための関数
+# URL処理をバックグラウンドで行うための関数（テスト用）
 def process_url_and_notify(url, session_id):
     print(f"バックグラウンド処理開始: {url}")
     scraped_data = scrape_website(url)
@@ -367,16 +367,50 @@ def process_url_and_notify(url, session_id):
         # 1. まずDBにコンテンツを保存する
         is_success = chunk_and_store_text(cleaned_text, scraped_data['title'], url)
 
-        summary = "" # 要約を格納する変数を初期化
-        if is_success:
-            # 2. DB保存が成功したら、Geminiで要約を試みる
-            try:
-                print("Gemini APIでURL内容の要約を生成しています...")
-                # 長すぎるテキストは予期せぬエラーを防ぐため、ある程度の長さでカットする
-                text_for_summary = cleaned_text[:15000] 
+        # ★★★ ここから下を一時的にコメントアウト ★★★
+        # summary = "" # 要約を格納する変数を初期化
+        # if is_success:
+        #     # 2. DB保存が成功したら、Geminiで要約を試みる
+        #     try:
+        #         print("Gemini APIでURL内容の要約を生成しています...")
+        #         text_for_summary = cleaned_text[:15000] 
+        #         summarize_prompt = f"""以下の記事の内容を、最も重要なポイントを3点に絞って、箇条書きで簡潔に要約してください。
+        # 
+        # # 記事本文
+        # {text_for_summary}
+        # 
+        # # 要約
+        # """
+        #         model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        #         response = model.generate_content(summarize_prompt)
+        #         summary = response.text.strip()
+        #         print("要約の生成に成功しました。")
+        #     except Exception as e:
+        #         print(f"要約の生成中にエラー: {e}")
+        #         summary = "要約の生成に失敗しました。"
+        # 
+        # # 3. LINEに通知メッセージを送信する
+        # with ApiClient(configuration) as api_client:
+        #     line_bot_api = MessagingApi(api_client)
+        #     if is_success:
+        #         title = scraped_data.get('title', 'タイトル不明')
+        #         message_text = (
+        #             f"【完了】URLの内容を記憶しました！\n\n"
+        #             f"『{title}』\n\n"
+        #             f"【AIによる3行要約】\n{summary}\n\n"
+        #             f"URL:\n{url}"
+        #         )
+        #         line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=message_text)]))
+        #     else:
+        #         line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"【失敗】URLの読み込み・保存に失敗しました。\n{url}")]))
+        # ★★★ ここまでを一時的にコメントアウト ★★★
 
-                summarize_prompt = f"""以下の記事の内容を、最も重要なポイントを3点に絞って、箇条書きで簡潔に要約してください。
-
+    else: # スクレイピング自体に失敗した場合
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"【失敗】URLへのアクセスに失敗しました。\n{url}")]))
+            
+    print(f"バックグラウンド処理完了: {url}")
 # 記事本文
 {text_for_summary}
 
