@@ -303,7 +303,7 @@ def handle_text_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
-        # ★★★ ここからが追加部分 ★★★
+        
         # 1. まずキーワードをチェックする
         if message_text.lower() == 'pdf':
             liff_url = "https://starlit-alfajores-f1b64c.netlify.app/" #
