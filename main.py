@@ -306,7 +306,7 @@ def handle_text_message(event):
         
         # 1. まずキーワードをチェックする
         if message_text.lower() == 'pdf':
-            liff_url = "https://starlit-alfajores-f1b64c.netlify.app/" #
+            liff_url = "https://starlit-alfajores-f1b64c.netlify.app/liff.html" #
             reply_text = f"PDFをアップは、ここから！\n{liff_url}"
             line_bot_api.reply_message(
                 ReplyMessageRequest(
