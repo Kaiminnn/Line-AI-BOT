@@ -537,19 +537,34 @@ def initiate_upload():
         if not filename:
             return jsonify({'status': 'error', 'message': 'Filename is required'}), 400
 
-        print(f"アップロードセッション開始リクエスト: {filename}")
-        service = get_drive_service()
-        if not service:
-            raise Exception("Driveサービスを作成できませんでした。")
+        print(f"アップロードセッション開始リクエストを受信: {filename}")
 
-        file_metadata = {'name': filename, 'parents': [GOOGLE_DRIVE_FOLDER_ID]}
+        # ★★★ ここからが修正部分 ★★★
+        # 認証情報オブジェクトをこの場で直接作成する
+        creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
+        if not creds_json_str:
+            raise ValueError("環境変数 'GOOGLE_CREDENTIALS_JSON' が設定されていません。")
         
-        # ★★★ ここが修正点 ★★★
-        # requestsライブラリを使い、認証情報（Authorizationヘッダー）を付けてリクエストを送信
+        creds_info = json.loads(creds_json_str)
+        creds = service_account.Credentials.from_service_account_info(
+            creds_info,
+            scopes=['https://www.googleapis.com/auth/drive']
+        )
+        creds.refresh(GoogleAuthRequest()) # トークンをリフレッシュ
+
+        # 上記で作成した認証情報（creds）からアクセストークンを取得する
+        access_token = creds.token
+        # ★★★ ここまでが修正部分 ★★★
+
+        file_metadata = {
+            'name': filename,
+            'parents': [GOOGLE_DRIVE_FOLDER_ID]
+        }
+        
         response = requests.post(
             'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
             headers={
-                'Authorization': f'Bearer {service.credentials.token}',
+                'Authorization': f'Bearer {access_token}', # 正しいトークンを使用
                 'Content-Type': 'application/json; charset=UTF-8',
             },
             data=json.dumps(file_metadata)
@@ -563,7 +578,6 @@ def initiate_upload():
 
     except Exception as e:
         print(f"アップロードセッションの開始中にエラー: {e}")
-        # エラーの詳細をLIFFに返すように修正
         return jsonify({'status': 'error', 'message': f'Failed to initiate session: {str(e)}'}), 500
 
 def process_uploaded_pdf(drive_file_id, filename, context_id):
