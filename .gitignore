@@ -7,3 +7,16 @@ venv/
 # Pythonが自動生成するキャッシュフォルダを無視する
 __pycache__/
 *.pyc
+
+# 秘密の情報を無視する
+.env
+
+# Pythonの仮想環境フォルダを無視する
+venv/
+
+# Pythonが自動生成するキャッシュフォルダを無視する
+__pycache__/
+*.pyc
+
+# Google認証キー
+*.json

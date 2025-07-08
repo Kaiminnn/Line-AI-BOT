@@ -15,7 +15,6 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.messaging.api.messaging_api_blob import MessagingApiBlob
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent
-
 from sqlalchemy import create_engine, text, Column, Integer, String, Text as AlchemyText, DateTime
 from sqlalchemy.orm import sessionmaker, declarative_base
 from pgvector.sqlalchemy import Vector
@@ -24,9 +23,11 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from datetime import datetime, timezone
 from flask import jsonify 
 from flask_cors import CORS
-
 import threading # 時間のかかる処理をバックグラウンドで行うために追加
 import fitz      # PyMuPDFライブラリ。PDFのテキストを抽出するために使用
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 
 # .envファイルから環境変数を読み込む
 load_dotenv()
@@ -36,6 +37,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 DATABASE_URL = os.environ.get('DATABASE_URL')
+GOOGLE_DRIVE_FOLDER_ID = os.environ.get('GOOGLE_DRIVE_FOLDER_ID')
 
 # 保存するメッセージの上限数
 MAX_DOCUMENTS = 20000
@@ -446,38 +448,75 @@ def process_image_and_notify(user_id, session_id, image_bytes):
             line_bot_api = MessagingApi(api_client)
             line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"画像の処理中にエラーが発生しました。")]))
 
+def upload_to_google_drive_and_get_link(pdf_bytes, filename):
+    """Google Driveにファイルをアップロードし、共有リンクを返す"""
+    try:
+        print("Google Driveへのアップロードを開始します。")
+        creds = service_account.Credentials.from_service_account_file(
+            os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'),
+            scopes=['https://www.googleapis.com/auth/drive']
+        )
+        service = build('drive', 'v3', credentials=creds)
+
+        file_metadata = {
+            'name': filename,
+            'parents': [GOOGLE_DRIVE_FOLDER_ID]
+        }
+        
+        media = MediaIoBaseUpload(BytesIO(pdf_bytes), mimetype='application/pdf')
+        
+        file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, webViewLink'
+        ).execute()
+
+        # アップロードしたファイルを一般公開してリンクを取得
+        file_id = file.get('id')
+        permission = {'type': 'anyone', 'role': 'reader'}
+        service.permissions().create(fileId=file_id, body=permission).execute()
+        
+        print("Google Driveへのアップロードと共有設定が完了しました。")
+        return file.get('webViewLink')
+
+    except Exception as e:
+        print(f"Google Driveへのアップロード中にエラー: {e}")
+        return None
+
 # PDF処理を裏方で行う
 def process_pdf_and_notify(pdf_bytes, filename, context_id):
     """
-    PDFを受け取り、テキスト抽出を試みる。失敗した場合はGemini OCRを使い、
-    その後、要約生成、DB保存、LINEへの通知を行う。
+    PDFを受け取り、★Drive保存★、テキスト抽出、要約、DB保存、LINE通知を行う
     """
     print(f"バックグラウンドでPDF処理を開始: {filename}")
     raw_text = ""
-    temp_pdf_path = f"temp_{filename}" # 一時ファイル名
+    temp_pdf_path = f"temp_{filename}"
+    drive_link = "" # ★Driveのリンクを保存する変数を追加
 
     try:
-        # 1. まずPyMuPDFで高速なテキスト抽出を試みる
+        # ★★★ ここからがDriveアップロード処理 ★★★
+        drive_link = upload_to_google_drive_and_get_link(pdf_bytes, filename)
+        if not drive_link:
+            drive_link = "ファイルの共有リンク作成に失敗しました。"
+        # ★★★ ここまで ★★★
+
+        # 1. PyMuPDFでテキスト抽出
         print("PyMuPDFでテキスト抽出を試みています...")
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         for page in doc:
             raw_text += page.get_text()
         doc.close()
         print("PyMuPDFでの処理が完了しました。")
-        
-        # 2. テキストが空っぽだったら、GeminiのOCR機能を使う
+
+        # 2. テキストが空ならGemini OCR
         if not raw_text.strip():
             print("テキストが空のため、Gemini OCRに切り替えます。")
-            
-            # Geminiにファイルをアップロードするために、一度ファイルとして保存する
             with open(temp_pdf_path, "wb") as f:
                 f.write(pdf_bytes)
 
-            # Google AI File APIにファイルをアップロード
             print("GeminiのFile APIにPDFをアップロード中...")
             uploaded_file = genai.upload_file(path=temp_pdf_path, display_name=filename)
             
-            # GeminiにOCR処理をリクエスト
             print("GeminiにOCR処理をリクエスト中...")
             model = genai.GenerativeModel('gemini-1.5-flash-latest')
             response = model.generate_content([
@@ -486,9 +525,8 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
             ])
             raw_text = response.text
             print("GeminiによるOCR処理が完了しました。")
-        
 
-        # 3. Gemini APIを使って要約を作成する
+        # 3. Gemini APIで要約作成
         summary = ""
         try:
             print("Gemini APIで要約を生成しています...")
@@ -498,18 +536,18 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
             summary = response.text.strip()
             print("要約の生成に成功しました。")
         except Exception as e:
-            print(f"要約の生成中にエラーが発生しました: {e}")
+            print(f"要約の生成中にエラー: {e}")
             summary = "要約の生成に失敗しました。"
 
-        # 4. テキストを整形し、DBに保存する
+        # 4. テキストをDBに保存
         cleaned_text = clean_text(raw_text)
         is_success = chunk_and_store_text(cleaned_text, title=filename, source_url=filename)
 
-        # 5. LINEに通知を送る
+        # 5. LINEに通知（★メッセージ内容を修正★）
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             if is_success:
-                message_text = f"PDF「{filename}」を記憶しました！\n\n【AIによる3行要約】\n{summary}"
+                message_text = f"PDF「{filename}」を記憶しました！\n\n【AIによる3行要約】\n{summary}\n\nファイルリンク:\n{drive_link}"
                 message = TextMessage(text=message_text)
             else:
                 message = TextMessage(text=f"PDF「{filename}」の保存に失敗しました。")
@@ -519,12 +557,11 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
         print(f"バックグラウンドでのPDF処理中にエラー: {e}")
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
-            message = TextMessage(text=f"PDF「{filename}」の処理中にエラーが発生しました。")
+            message_text = f"PDF「{filename}」の処理中にエラーが発生しました。\n\nファイルリンク:\n{drive_link}"
+            message = TextMessage(text=message_text)
             line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
             
     finally:
-        # 一時ファイルの後片付け
-        # サーバーに一時的に保存したPDFファイルを削除する
         if os.path.exists(temp_pdf_path):
             os.remove(temp_pdf_path)
             print(f"一時ファイル {temp_pdf_path} を削除しました。")
