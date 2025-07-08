@@ -502,19 +502,26 @@ def process_image_and_notify(user_id, session_id, image_bytes):
             line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"画像の処理中にエラーが発生しました。")]))
 
 # ### PDFアップロード関連の新しい関数群 ###
+# ### PDFアップロード関連の修正後コード ###
 
 def get_drive_service():
-    """Google Drive APIのサービスオブジェクトを返すヘルパー関数"""
-    creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
-    if not creds_json_str:
-        raise ValueError("環境変数 'GOOGLE_CREDENTIALS_JSON' が設定されていません。")
-    
-    creds_info = json.loads(creds_json_str)
-    creds = service_account.Credentials.from_service_account_info(
-        creds_info,
-        scopes=['https://www.googleapis.com/auth/drive']
-    )
-    return build('drive', 'v3', credentials=creds)
+    """Google Drive APIのサービスオブジェクトを安全に取得する関数"""
+    try:
+        creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
+        if not creds_json_str:
+            raise ValueError("環境変数 'GOOGLE_CREDENTIALS_JSON' が設定されていません。")
+        
+        creds_info = json.loads(creds_json_str)
+        creds = service_account.Credentials.from_service_account_info(
+            creds_info,
+            scopes=['https://www.googleapis.com/auth/drive']
+        )
+        # 認証情報をリフレッシュして、有効なアクセストークンを確実に取得
+        creds.refresh(requests.Request())
+        return build('drive', 'v3', credentials=creds)
+    except Exception as e:
+        print(f"Google Driveサービスオブジェクトの作成中にエラー: {e}")
+        return None
 
 @app.route('/initiate-upload', methods=['POST'])
 def initiate_upload():
@@ -525,60 +532,97 @@ def initiate_upload():
         if not filename:
             return jsonify({'status': 'error', 'message': 'Filename is required'}), 400
 
-        print(f"アップロードセッション開始リクエストを受信: {filename}")
+        print(f"アップロードセッション開始リクエスト: {filename}")
         service = get_drive_service()
+        if not service:
+            raise Exception("Driveサービスを作成できませんでした。")
+
+        file_metadata = {'name': filename, 'parents': [GOOGLE_DRIVE_FOLDER_ID]}
         
-        file_metadata = {
-            'name': filename,
-            'parents': [GOOGLE_DRIVE_FOLDER_ID]
-        }
-        
-        # Resumable Uploadを開始し、専用のURLを取得するリクエスト
-        request_body = service.files().create(
-            body=file_metadata,
-            fields='id' # この段階ではIDだけあれば良い
+        # ★★★ ここが修正点 ★★★
+        # requestsライブラリを使い、認証情報（Authorizationヘッダー）を付けてリクエストを送信
+        response = requests.post(
+            'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
+            headers={
+                'Authorization': f'Bearer {service.credentials.token}',
+                'Content-Type': 'application/json; charset=UTF-8',
+            },
+            data=json.dumps(file_metadata)
         )
-        # ここで重要なのは、アップロードURLを取得するためのレスポンスヘッダー
-        response = request_body.http.request(
-            uri=f'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
-            method='POST',
-            headers={'Content-Type': 'application/json'},
-            body=json.dumps(file_metadata)
-        )
+        response.raise_for_status()
         
-        # レスポンスヘッダーからアップロード用のURLを取得
-        upload_url = response.headers['location']
-        print(f"アップロード用URLを発行: {upload_url}")
+        upload_url = response.headers['Location']
+        print("アップロード用URLの発行に成功しました。")
         
         return jsonify({'status': 'success', 'upload_url': upload_url}), 200
 
     except Exception as e:
         print(f"アップロードセッションの開始中にエラー: {e}")
-        return jsonify({'status': 'error', 'message': 'Failed to initiate upload session'}), 500
+        # エラーの詳細をLIFFに返すように修正
+        return jsonify({'status': 'error', 'message': f'Failed to initiate session: {str(e)}'}), 500
 
-@app.route('/finalize-upload', methods=['POST'])
-def finalize_upload():
-    """LIFFからのアップロード完了報告を受け、バックグラウンド処理を開始する"""
+def process_uploaded_pdf(drive_file_id, filename, context_id):
+    """Google Drive上のPDFファイルを処理するバックグラウンドタスク"""
+    print(f"バックグラウンド処理開始: {filename} (Drive File ID: {drive_file_id})")
+    drive_link = f"https://drive.google.com/file/d/{drive_file_id}/view?usp=sharing"
+
     try:
-        data = request.get_json()
-        drive_file_id = data.get('drive_file_id')
-        context_id = data.get('contextId')
-        filename = data.get('filename')
+        # 1. Google Driveからファイルをダウンロード (よりシンプルな方法に修正)
+        print("Google Driveからファイルをダウンロードしています...")
+        service = get_drive_service()
+        if not service:
+            raise Exception("Driveサービスを作成できませんでした。")
+        
+        media_request = service.files().get_media(fileId=drive_file_id)
+        pdf_bytes = media_request.execute()
 
-        if not all([drive_file_id, context_id, filename]):
-            return jsonify({'status': 'error', 'message': 'Missing required data'}), 400
-        
-        print(f"完了報告を受信: file_id={drive_file_id}, context_id={context_id}")
-        
-        # 時間のかかる処理をバックグラウンドで実行
-        thread = threading.Thread(target=process_uploaded_pdf, args=(drive_file_id, filename, context_id))
-        thread.start()
-        
-        return jsonify({'status': 'success', 'message': 'Processing started'}), 200
+        # 2. テキスト抽出
+        raw_text = ""
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        for page in doc:
+            raw_text += page.get_text()
+        doc.close()
+
+        # 3. テキストが空ならGemini OCR (より確実な方法に修正)
+        if not raw_text.strip():
+            print("テキストが空のため、Gemini OCRに切り替えます。")
+            temp_pdf_path = f"temp_{filename}"
+            with open(temp_pdf_path, "wb") as f:
+                f.write(pdf_bytes)
+            
+            uploaded_file = genai.upload_file(path=temp_pdf_path, display_name=filename)
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content(["このPDFファイルに書かれているテキストを全て書き出して", uploaded_file])
+            raw_text = response.text
+            os.remove(temp_pdf_path) # 一時ファイルを削除
+
+        # 4. 要約作成 ...（以降の処理は変更なし）
+        summary = ""
+        try:
+            summarize_prompt = f"以下の文章を、重要なポイントを3点に絞って箇条書きで要約してください。\n\n---\n\n{raw_text[:8000]}"
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content(summarize_prompt)
+            summary = response.text.strip()
+        except Exception as e:
+            summary = f"要約の生成に失敗しました。"
+
+        # 5. DBに保存
+        cleaned_text = clean_text(raw_text)
+        is_success = chunk_and_store_text(cleaned_text, title=filename, source_url=drive_link)
+
+        # 6. LINEに通知
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            message_text = f"PDF「{filename}」を記憶しました！\n\n【AIによる3行要約】\n{summary}\n\nファイルリンク:\n{drive_link}"
+            line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[TextMessage(text=message_text)]))
 
     except Exception as e:
-        print(f"完了報告の処理中にエラー: {e}")
-        return jsonify({'status': 'error', 'message': 'Failed to finalize upload'}), 500
+        print(f"バックグラウンド処理中にエラー: {e}")
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            message = TextMessage(text=f"PDF「{filename}」の処理中にエラーが発生しました。\n\nファイルリンク:\n{drive_link}")
+            line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
+
 
 def process_uploaded_pdf(drive_file_id, filename, context_id):
     """Google Drive上のPDFファイルを処理するバックグラウンドタスク"""
