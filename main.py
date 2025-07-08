@@ -439,30 +439,51 @@ def process_image_and_notify(user_id, session_id, image_bytes):
 # PDF処理を裏方で行う
 def process_pdf_and_notify(pdf_bytes, filename, context_id):
     """
-    PDFのバイトデータを受け取り、テキスト抽出、★要約生成★、DB保存、LINEへの通知を行う関数。
+    PDFを受け取り、テキスト抽出を試みる。失敗した場合はGemini OCRを使い、
+    その後、要約生成、DB保存、LINEへの通知を行う。
     """
     print(f"バックグラウンドでPDF処理を開始: {filename}")
+    raw_text = ""
+    temp_pdf_path = f"temp_{filename}" # 一時ファイル名
+
     try:
-        # 1. 受け取ったバイトデータからPDFを開く
+        # 1. まずPyMuPDFで高速なテキスト抽出を試みる
+        print("PyMuPDFでテキスト抽出を試みています...")
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        
-        # 2. 全ページのテキストを抽出する
-        raw_text = ""
         for page in doc:
             raw_text += page.get_text()
         doc.close()
+        print("PyMuPDFでの処理が完了しました。")
 
+        # ★★★ ここからがOCR機能の追加部分 ★★★
+        # 2. テキストが空っぽだったら、GeminiのOCR機能を使う
         if not raw_text.strip():
-            raise ValueError("PDFからテキストを抽出できませんでした。")
+            print("テキストが空のため、Gemini OCRに切り替えます。")
+            
+            # Geminiにファイルをアップロードするために、一度ファイルとして保存する
+            with open(temp_pdf_path, "wb") as f:
+                f.write(pdf_bytes)
 
-        # ★★★ ここからがステップ3の追加部分 ★★★
+            # Google AI File APIにファイルをアップロード
+            print("GeminiのFile APIにPDFをアップロード中...")
+            uploaded_file = genai.upload_file(path=temp_pdf_path, display_name=filename)
+            
+            # GeminiにOCR処理をリクエスト
+            print("GeminiにOCR処理をリクエスト中...")
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content([
+                "このPDFファイルに書かれているテキストを、すべて書き出して日本語で出力してください。",
+                uploaded_file
+            ])
+            raw_text = response.text
+            print("GeminiによるOCR処理が完了しました。")
+        # ★★★ ここまでがOCR機能の追加部分 ★★★
+
         # 3. Gemini APIを使って要約を作成する
-        summary = "" # 要約を格納する変数をまず用意する
+        summary = ""
         try:
             print("Gemini APIで要約を生成しています...")
-            # Geminiに渡す「お願い（プロンプト）」を作成
-            summarize_prompt = f"以下の文章を、重要なポイントを3点に絞って箇条書きで要約してください。\n\n---\n\n{raw_text[:8000]}" # 長いPDFの場合に備え、テキストの一部を渡す
-            
+            summarize_prompt = f"以下の文章を、重要なポイントを3点に絞って箇条書きで要約してください。\n\n---\n\n{raw_text[:8000]}"
             model = genai.GenerativeModel('gemini-1.5-flash-latest')
             response = model.generate_content(summarize_prompt)
             summary = response.text.strip()
@@ -470,22 +491,19 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
         except Exception as e:
             print(f"要約の生成中にエラーが発生しました: {e}")
             summary = "要約の生成に失敗しました。"
-        # ★★★ ここまでがステップ3の追加部分 ★★★
 
-        # 4. 既存の関数を使ってテキストを整形し、DBに保存する
+        # 4. テキストを整形し、DBに保存する
         cleaned_text = clean_text(raw_text)
         is_success = chunk_and_store_text(cleaned_text, title=filename, source_url=filename)
 
-        # 5. 処理が終わったらLINEに通知を送る（★メッセージ内容を修正★）
+        # 5. LINEに通知を送る
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             if is_success:
-                # 要約を含んだ、よりリッチなメッセージを作成
                 message_text = f"PDF「{filename}」を記憶しました！\n\n【AIによる3行要約】\n{summary}"
                 message = TextMessage(text=message_text)
             else:
                 message = TextMessage(text=f"PDF「{filename}」の保存に失敗しました。")
-            
             line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
 
     except Exception as e:
@@ -494,6 +512,13 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
             line_bot_api = MessagingApi(api_client)
             message = TextMessage(text=f"PDF「{filename}」の処理中にエラーが発生しました。")
             line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
+            
+    finally:
+        # ★★★ 一時ファイルの後片付けを追加 ★★★
+        # サーバーに一時的に保存したPDFファイルを削除する
+        if os.path.exists(temp_pdf_path):
+            os.remove(temp_pdf_path)
+            print(f"一時ファイル {temp_pdf_path} を削除しました。")
 
 # PDF読み取り ---
 @app.route('/upload', methods=['POST'])
