@@ -13,7 +13,8 @@ from PIL import Image
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
-    Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage, PushMessageRequest
+    Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage, PushMessageRequest,
+    QuickReply, QuickReplyButton, MessageAction
 )
 from linebot.v3.messaging.api.messaging_api_blob import MessagingApiBlob
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent
@@ -303,11 +304,27 @@ def handle_text_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
+        # ★★★ ここからが追加・変更部分 ★★★
+        # 1. 「要約して：」で始まるメッセージ（ボタンからの命令）をチェック
+        if message_text.startswith("要約して："):
+            url_to_summarize = message_text.replace("要約して：", "").strip()
+            
+            # まずユーザーに受付したことを伝える
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="承知しました。内容を要約しますので、少々お待ちください。")]
+                )
+            )
+            # バックグラウンドで要約処理を実行
+            thread = threading.Thread(target=summarize_and_push_message, args=(url_to_summarize, session_id))
+            thread.start()
+            return
+        # ★★★ ここまで ★★★
 
-        # 1. まずキーワードをチェックする
+        # 2. キーワード「pdf」をチェック
         if message_text.lower() == 'pdf':
-            liff_url = "https://starlit-alfajores-f1b64c.netlify.app/" #
-            liff_url = "https://starlit-alfajores-f1b64c.netlify.app/liff.html" #
+            liff_url = "https://starlit-alfajores-f1b64c.netlify.app/liff.html"
             reply_text = f"PDFをアップは、ここから！\n{liff_url}"
             line_bot_api.reply_message(
                 ReplyMessageRequest(
@@ -315,16 +332,16 @@ def handle_text_message(event):
                     messages=[TextMessage(text=reply_text)]
                 )
             )
-            return # 案内を送ったら、ここで処理を終了する
-        # ★★★ ここまでが追加部分 ★★★
+            return
 
-        # 2. キーワードに当てはまらない場合は、今までの処理を続ける
+        # 3. キーワード「質問：」をチェック
         if message_text.startswith(("質問：", "質問:")):
             question = message_text.replace("質問：", "", 1).replace("質問:", "", 1).strip()
             answer = answer_question(question, user_id, session_id)
             line_bot_api.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=answer)]))
             return
 
+        # 4. キーワード「DB確認」をチェック
         elif message_text == "DB確認":
             session = Session()
             doc_count = session.query(Document).count()
@@ -333,25 +350,19 @@ def handle_text_message(event):
             session.close()
             line_bot_api.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=reply_text)]))
             return
-
+        
+        # 5. 上記のいずれでもない場合（URLか、ただの会話）
         else:
             urls = re.findall(r'https?://\S+', message_text)
             commentary = re.sub(r'https?://\S+', '', message_text).strip()
 
             if commentary:
                 store_message(user_id, commentary)
-
+            
             if urls:
-                try:
-                    line_bot_api.reply_message(
-                        ReplyMessageRequest(
-                            reply_token=reply_token,
-                            messages=[TextMessage(text=f"メッセージと{len(urls)}件のURL、承知しました。内容を読んで記憶しますね。")]
-                        )
-                    )
-                except Exception as e:
-                    print(f"URL処理の初期返信でエラー（トークン切れや重複返信の可能性）: {e}")
-
+                # URLが含まれている場合は、先に返信する（ボタンが付くのでここでは返信しない）
+                pass
+                
                 for url in urls:
                     thread = threading.Thread(target=process_url_and_notify, args=(url, session_id))
                     thread.start()
@@ -359,60 +370,87 @@ def handle_text_message(event):
 
 # URL処理をバックグラウンドで行うための関数
 def process_url_and_notify(url, session_id):
+    """URLの内容をDBに記憶し、要約ボタン付きの通知を送る"""
     print(f"バックグラウンド処理開始: {url}")
     scraped_data = scrape_website(url)
-
+    
     if scraped_data and scraped_data['raw_text']:
         cleaned_text = clean_text(scraped_data['raw_text'])
-        # 1. まずDBにコンテンツを保存する
-        is_success = chunk_and_store_text(cleaned_text, scraped_data['title'], url)
-
-        summary = "" # 要約を格納する変数を初期化
-        if is_success:
-            # 2. DB保存が成功したら、Geminiで要約を試みる
-            try:
-                print("Gemini APIでURL内容の要約を生成しています...")
-                # 長すぎるテキストは予期せぬエラーを防ぐため、ある程度の長さでカットする
-                text_for_summary = cleaned_text[:15000] 
-
-                summarize_prompt = f"""以下の記事の内容を、最も重要なポイントを3点に絞って、箇条書きで簡潔に要約してください。
-
-# 記事本文
-{text_for_summary}
-
-# 要約
-"""
-                model = genai.GenerativeModel('gemini-1.5-flash-latest')
-                response = model.generate_content(summarize_prompt)
-                summary = response.text.strip()
-                print("要約の生成に成功しました。")
-            except Exception as e:
-                print(f"要約の生成中にエラー: {e}")
-                summary = "要約の生成に失敗しました。"
-
-        # 3. LINEに通知メッセージを送信する
+        is_success = chunk_and_store_text(cleaned_text, scraped_data.get('title', 'タイトル不明'), url)
+        
+        # 1. LINEに通知メッセージを送信する
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             if is_success:
-                # 成功した場合、メッセージにタイトルと要約を追加する
-                title = scraped_data.get('title', 'タイトル不明')
-                message_text = (
-                    f"【完了】URLの内容を記憶しました！\n\n"
-                    f"『{title}』\n\n"
-                    f"【AIによる3行要約】\n{summary}\n\n"
-                    f"URL:\n{url}"
+                # ★★★ここからがボタン作成部分★★★
+                # ボタンが押されたら「要約して：[URL]」というテキストが送信されるように設定
+                summarize_action = MessageAction(
+                    label="この内容を要約する",
+                    text=f"要約して：{url}"
                 )
-                line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=message_text)]))
+                # 上記のアクションを持つボタンを作成
+                quick_reply_button = QuickReplyButton(action=summarize_action)
+                
+                # ボタンをクイックリプライとしてメッセージに含める
+                quick_reply_items = QuickReply(items=[quick_reply_button])
+                
+                message_text = f"【完了】URLの内容を記憶しました！\n\n『{scraped_data.get('title', 'タイトル不明')}』"
+                
+                # テキストメッセージにクイックリプライを付けて送信
+                line_bot_api.push_message(PushMessageRequest(
+                    to=session_id, 
+                    messages=[TextMessage(text=message_text, quick_reply=quick_reply_items)]
+                ))
             else:
-                # 失敗した場合は、従来通りのメッセージを送信
                 line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"【失敗】URLの読み込み・保存に失敗しました。\n{url}")]))
 
     else: # スクレイピング自体に失敗した場合
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"【失敗】URLへのアクセスに失敗しました。\n{url}")]))
-
+            
     print(f"バックグラウンド処理完了: {url}")
+
+
+def summarize_and_push_message(url, session_id):
+    """指定されたURLの内容をDBから読み出して要約し、結果をプッシュ通知する"""
+    print(f"要約処理を開始: {url}")
+    session = Session()
+    try:
+        # DBから指定されたURLのチャンクを全て取得
+        docs = session.query(Document).filter(Document.source == url).all()
+        if not docs:
+            raise ValueError("指定されたURLのデータがDBに見つかりません。")
+
+        # チャンクを結合して元のテキストを復元
+        # "記事「〇〇」より抜粋：\n" の部分を削除して結合
+        original_text = "\n".join([doc.content.split('：\n', 1)[1] for doc in docs])
+
+        # Geminiで要約を生成
+        summarize_prompt = f"""以下の記事の内容を、最も重要なポイントを3点に絞って、箇条書きで簡潔に要約してください。
+
+# 記事本文
+{original_text[:15000]}
+
+# 要約
+"""
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        response = model.generate_content(summarize_prompt)
+        summary = response.text.strip()
+
+        # 要約結果をプッシュ通知
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            message_text = f"『{docs[0].content.split('」より抜粋：')[0][3:]}』の要約です。\n\n【AIによる3行要約】\n{summary}"
+            line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=message_text)]))
+
+    except Exception as e:
+        print(f"要約処理中にエラー: {e}")
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text="要約の生成中にエラーが発生しました。")]))
+    finally:
+        session.close()
 
 # 画像メッセージを処理する受付係
 @handler.add(MessageEvent, message=ImageMessageContent)
