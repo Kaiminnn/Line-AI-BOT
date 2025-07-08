@@ -278,7 +278,7 @@ def answer_question(question, user_id, session_id):
     finally:
         session.close()
 
-# LINEからのWebhookを受け取るエンドポイント
+# LINEからのWebhookを受け取るエンドポイント　
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
@@ -305,9 +305,9 @@ def handle_text_message(event):
 
         # ★★★ ここからが追加部分 ★★★
         # 1. まずキーワードをチェックする
-        if 'pdf' in message_text.lower(): # メッセージを小文字にして'pdf'が含まれるかチェック
-            liff_url = "https://starlit-alfajores-f1b64c.netlify.app/" # あなたのLIFFのURL
-            reply_text = f"PDFをアップロードするには、こちらの専用ページをご利用ください。\n{liff_url}"
+        if message_text.lower() == 'pdf':
+            liff_url = "https://starlit-alfajores-f1b64c.netlify.app/" #
+            reply_text = f"PDFをアップは、ここから！\n{liff_url}"
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
