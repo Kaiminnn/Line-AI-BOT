@@ -469,7 +469,7 @@ def upload_to_google_drive_and_get_link(pdf_bytes, filename):
     try:
         print("Google Driveへのアップロードを開始します。")
         
-        # ★★★ ここからが修正部分 ★★★
+        
         # 環境変数からJSON文字列を読み込む
         creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
         if not creds_json_str:
