@@ -163,6 +163,17 @@ def check_and_prune_db(session):
         session.commit()
         print(f"上限を超えたため、古いメッセージを {items_to_delete_count} 件削除しました。")
 
+def check_and_prune_chat_history(session, session_id):
+    """指定されたsession_idのチャット履歴が上限を超えていたら、古いものから削除する"""
+    total_count = session.query(ChatHistory).filter(ChatHistory.session_id == session_id).count()
+    if total_count > MAX_CHAT_HISTORY:
+        items_to_delete_count = total_count - MAX_CHAT_HISTORY
+        oldest_history = session.query(ChatHistory).filter(ChatHistory.session_id == session_id).order_by(ChatHistory.created_at.asc()).limit(items_to_delete_count).all()
+        for history_item in oldest_history:
+            session.delete(history_item)
+        print(f"チャット履歴の上限を超えたため、{session_id} の古い履歴を {items_to_delete_count} 件削除しました。")
+
+
 def get_chat_history(session_id):
     session = Session()
     try:
@@ -174,8 +185,15 @@ def get_chat_history(session_id):
 def add_to_chat_history(session_id, role, content):
     session = Session()
     try:
+        # 新しい履歴を追加
         history_entry = ChatHistory(session_id=session_id, role=role, content=content)
         session.add(history_entry)
+        
+        # ★★★ ここが追加部分 ★★★
+        # 履歴を追加した直後に、件数チェックと整理を行う
+        check_and_prune_chat_history(session, session_id)
+        # ★★★ ここまで ★★★
+        
         session.commit()
     except Exception as e:
         print(f"チャット履歴の保存中にエラー: {e}")
