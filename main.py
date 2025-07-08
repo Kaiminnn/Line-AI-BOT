@@ -539,6 +539,7 @@ def initiate_upload():
 
         print(f"アップロードセッション開始リクエストを受信: {filename}")
 
+        # ★★★ ここからが修正部分 ★★★
         # 認証情報オブジェクトをこの場で直接作成する
         creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
         if not creds_json_str:
@@ -553,6 +554,7 @@ def initiate_upload():
 
         # 上記で作成した認証情報（creds）からアクセストークンを取得する
         access_token = creds.token
+        # ★★★ ここまでが修正部分 ★★★
 
         file_metadata = {
             'name': filename,
