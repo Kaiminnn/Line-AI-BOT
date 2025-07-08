@@ -25,11 +25,12 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from datetime import datetime, timezone
 from flask import jsonify 
 from flask_cors import CORS
-import threading # 時間のかかる処理をバックグラウンドで行うために追加
-import fitz      # PyMuPDFライブラリ。PDFのテキストを抽出するために使用
+import threading  
+import fitz      
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
+from google.auth.transport.requests import Request as GoogleAuthRequest
 
 # .envファイルから環境変数を読み込む
 load_dotenv()
@@ -510,14 +511,18 @@ def get_drive_service():
         creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
         if not creds_json_str:
             raise ValueError("環境変数 'GOOGLE_CREDENTIALS_JSON' が設定されていません。")
-        
+
         creds_info = json.loads(creds_json_str)
         creds = service_account.Credentials.from_service_account_info(
             creds_info,
             scopes=['https://www.googleapis.com/auth/drive']
         )
+
+        # ★★★ ここが修正点 ★★★
         # 認証情報をリフレッシュして、有効なアクセストークンを確実に取得
-        creds.refresh(requests.Request())
+        # 正しいリクエストオブジェクト（GoogleAuthRequest）を使用します。
+        creds.refresh(GoogleAuthRequest())
+
         return build('drive', 'v3', credentials=creds)
     except Exception as e:
         print(f"Google Driveサービスオブジェクトの作成中にエラー: {e}")
