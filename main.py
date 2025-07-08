@@ -192,10 +192,10 @@ def add_to_chat_history(session_id, role, content):
         # 新しい履歴を追加
         history_entry = ChatHistory(session_id=session_id, role=role, content=content)
         session.add(history_entry)
-        
+
         # 履歴を追加した直後に、件数チェックと整理を行う
         check_and_prune_chat_history(session, session_id)
-        
+
         session.commit()
     except Exception as e:
         print(f"チャット履歴の保存中にエラー: {e}")
@@ -247,7 +247,7 @@ def answer_question(question, user_id, session_id):
             print(f"書き換えられた質問: {rephrased_question}")
         except Exception as e:
             print(f"質問の書き換え中にエラー: {e}")
-    
+
     session = Session()
     try:
         question_embedding = embed_text(rephrased_question)
@@ -303,9 +303,10 @@ def handle_text_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
-        
+
         # 1. まずキーワードをチェックする
         if message_text.lower() == 'pdf':
+            liff_url = "https://starlit-alfajores-f1b64c.netlify.app/" #
             liff_url = "https://starlit-alfajores-f1b64c.netlify.app/liff.html" #
             reply_text = f"PDFをアップは、ここから！\n{liff_url}"
             line_bot_api.reply_message(
@@ -332,14 +333,14 @@ def handle_text_message(event):
             session.close()
             line_bot_api.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=reply_text)]))
             return
-        
+
         else:
             urls = re.findall(r'https?://\S+', message_text)
             commentary = re.sub(r'https?://\S+', '', message_text).strip()
 
             if commentary:
                 store_message(user_id, commentary)
-            
+
             if urls:
                 try:
                     line_bot_api.reply_message(
@@ -350,22 +351,22 @@ def handle_text_message(event):
                     )
                 except Exception as e:
                     print(f"URL処理の初期返信でエラー（トークン切れや重複返信の可能性）: {e}")
-                
+
                 for url in urls:
                     thread = threading.Thread(target=process_url_and_notify, args=(url, session_id))
                     thread.start()
-            
+
 
 # URL処理をバックグラウンドで行うための関数
 def process_url_and_notify(url, session_id):
     print(f"バックグラウンド処理開始: {url}")
     scraped_data = scrape_website(url)
-    
+
     if scraped_data and scraped_data['raw_text']:
         cleaned_text = clean_text(scraped_data['raw_text'])
         # 1. まずDBにコンテンツを保存する
         is_success = chunk_and_store_text(cleaned_text, scraped_data['title'], url)
-        
+
         summary = "" # 要約を格納する変数を初期化
         if is_success:
             # 2. DB保存が成功したら、Geminiで要約を試みる
@@ -373,7 +374,7 @@ def process_url_and_notify(url, session_id):
                 print("Gemini APIでURL内容の要約を生成しています...")
                 # 長すぎるテキストは予期せぬエラーを防ぐため、ある程度の長さでカットする
                 text_for_summary = cleaned_text[:15000] 
-                
+
                 summarize_prompt = f"""以下の記事の内容を、最も重要なポイントを3点に絞って、箇条書きで簡潔に要約してください。
 
 # 記事本文
@@ -410,7 +411,7 @@ def process_url_and_notify(url, session_id):
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"【失敗】URLへのアクセスに失敗しました。\n{url}")]))
-            
+
     print(f"バックグラウンド処理完了: {url}")
 
 # 画像メッセージを処理する受付係
@@ -426,7 +427,7 @@ def handle_image_message(event):
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_blob_api = MessagingApiBlob(api_client)
-            
+
             # まずユーザーに、画像の処理を開始したことを素早く知らせる
             line_bot_api.reply_message(
                 ReplyMessageRequest(
@@ -437,7 +438,7 @@ def handle_image_message(event):
 
             # LINEのサーバーから画像データをバイトの塊として直接受け取る
             image_data_bytes = line_bot_blob_api.get_message_content(message_id=message_id)
-            
+
             # 受け取ったバイトデータをPillowで画像として開く
             img = Image.open(BytesIO(image_data_bytes))
 
@@ -449,7 +450,7 @@ def handle_image_message(event):
             # ユーザーの発言として、チャット履歴にも保存
             history_text = f"（画像が投稿されました。画像の内容： {image_description}）"
             add_to_chat_history(session_id, 'user', history_text)
-            
+
             # 長期記憶にも、説明文を一つの情報として保存
             image_source = f"image_from_user:{user_id}"
             store_message(user_id, history_text, source=image_source)
@@ -462,7 +463,7 @@ def handle_image_message(event):
                     messages=[TextMessage(text=push_text)]
                 )
             )
-            
+
     except Exception as e:
         print(f"画像処理中にエラーが発生しました: {e}")
         with ApiClient(configuration) as api_client:
@@ -485,7 +486,7 @@ def process_image_and_notify(user_id, session_id, image_bytes):
 
         history_text = f"（画像が投稿されました。画像の内容： {image_description}）"
         add_to_chat_history(session_id, 'user', history_text)
-        
+
         image_source = f"image_from_user:{user_id}"
         store_message(user_id, history_text, source=image_source)
 
@@ -505,33 +506,33 @@ def upload_to_google_drive_and_get_link(pdf_bytes, filename):
     """Google Driveにファイルをアップロードし、共有リンクを返す"""
     try:
         print("Google Driveへのアップロードを開始します。")
-        
-        
+
+
         # 環境変数からJSON文字列を読み込む
         creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
         if not creds_json_str:
             print("環境変数 'GOOGLE_CREDENTIALS_JSON' が設定されていません。")
             return None
-        
+
         # JSON文字列を辞書型に変換
         creds_info = json.loads(creds_json_str)
-        
+
         # ファイルからではなく、辞書情報から認証情報を作成する
         creds = service_account.Credentials.from_service_account_info(
             creds_info,
             scopes=['https://www.googleapis.com/auth/drive']
         )
         # ★★★ ここまでが修正部分 ★★★
-        
+
         service = build('drive', 'v3', credentials=creds)
 
         file_metadata = {
             'name': filename,
             'parents': [GOOGLE_DRIVE_FOLDER_ID]
         }
-        
+
         media = MediaIoBaseUpload(BytesIO(pdf_bytes), mimetype='application/pdf')
-        
+
         file = service.files().create(
             body=file_metadata,
             media_body=media,
@@ -542,7 +543,7 @@ def upload_to_google_drive_and_get_link(pdf_bytes, filename):
         file_id = file.get('id')
         permission = {'type': 'anyone', 'role': 'reader'}
         service.permissions().create(fileId=file_id, body=permission).execute()
-        
+
         print("Google Driveへのアップロードと共有設定が完了しました。")
         return file.get('webViewLink')
 
@@ -583,7 +584,7 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
 
             print("GeminiのFile APIにPDFをアップロード中...")
             uploaded_file = genai.upload_file(path=temp_pdf_path, display_name=filename)
-            
+
             print("GeminiにOCR処理をリクエスト中...")
             model = genai.GenerativeModel('gemini-1.5-flash-latest')
             response = model.generate_content([
@@ -627,7 +628,7 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
             message_text = f"PDF「{filename}」の処理中にエラーが発生しました。\n\nファイルリンク:\n{drive_link}"
             message = TextMessage(text=message_text)
             line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
-            
+
     finally:
         if os.path.exists(temp_pdf_path):
             os.remove(temp_pdf_path)
