@@ -378,20 +378,16 @@ def process_url_and_notify(url, session_id):
         cleaned_text = clean_text(scraped_data['raw_text'])
         is_success = chunk_and_store_text(cleaned_text, scraped_data.get('title', 'タイトル不明'), url)
         
-        # 1. LINEに通知メッセージを送信する
+        # LINEに通知メッセージを送信する
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             if is_success:
-                # ★★★ここからがボタン作成部分★★★
                 # ボタンが押されたら「要約して：[URL]」というテキストが送信されるように設定
                 summarize_action = MessageAction(
                     label="この内容を要約する",
                     text=f"要約して：{url}"
                 )
-                # 上記のアクションを持つボタンを作成
                 quick_reply_button = QuickReplyButton(action=summarize_action)
-                
-                # ボタンをクイックリプライとしてメッセージに含める
                 quick_reply_items = QuickReply(items=[quick_reply_button])
                 
                 message_text = f"【完了】URLの内容を記憶しました！\n\n『{scraped_data.get('title', 'タイトル不明')}』"
