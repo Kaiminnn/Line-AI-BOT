@@ -5,6 +5,8 @@ from bs4 import BeautifulSoup
 import google.generativeai as genai
 from flask import Flask, request, abort
 
+import json
+
 from io import BytesIO
 from PIL import Image
 
@@ -452,10 +454,24 @@ def upload_to_google_drive_and_get_link(pdf_bytes, filename):
     """Google Driveにファイルをアップロードし、共有リンクを返す"""
     try:
         print("Google Driveへのアップロードを開始します。")
-        creds = service_account.Credentials.from_service_account_file(
-            os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'),
+        
+        # ★★★ ここからが修正部分 ★★★
+        # 環境変数からJSON文字列を読み込む
+        creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
+        if not creds_json_str:
+            print("環境変数 'GOOGLE_CREDENTIALS_JSON' が設定されていません。")
+            return None
+        
+        # JSON文字列を辞書型に変換
+        creds_info = json.loads(creds_json_str)
+        
+        # ファイルからではなく、辞書情報から認証情報を作成する
+        creds = service_account.Credentials.from_service_account_info(
+            creds_info,
             scopes=['https://www.googleapis.com/auth/drive']
         )
+        # ★★★ ここまでが修正部分 ★★★
+        
         service = build('drive', 'v3', credentials=creds)
 
         file_metadata = {
