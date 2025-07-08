@@ -75,7 +75,7 @@ Session = sessionmaker(bind=engine)
 Base.metadata.create_all(engine, checkfirst=True)
 
 
-# --- ここから先のヘルパー関数群は、以前の最終版から変更ありません ---
+# --- ヘルパー関数群 ---
 
 def scrape_website(url):
     try:
@@ -189,10 +189,8 @@ def add_to_chat_history(session_id, role, content):
         history_entry = ChatHistory(session_id=session_id, role=role, content=content)
         session.add(history_entry)
         
-        # ★★★ ここが追加部分 ★★★
         # 履歴を追加した直後に、件数チェックと整理を行う
         check_and_prune_chat_history(session, session_id)
-        # ★★★ ここまで ★★★
         
         session.commit()
     except Exception as e:
@@ -325,6 +323,7 @@ def handle_text_message(event):
             
             if urls:
                 try:
+                    # URLが含まれている場合は、先に返信する
                     line_bot_api.reply_message(
                         ReplyMessageRequest(
                             reply_token=reply_token,
@@ -335,16 +334,9 @@ def handle_text_message(event):
                     print(f"URL処理の初期返信でエラー（トークン切れや重複返信の可能性）: {e}")
                 
                 for url in urls:
-                    # 時間のかかる処理はバックグラウンドで実行（スレッド化）
-                    # これにより、複数のURLがあってもLINEのタイムアウトを回避できる
                     thread = threading.Thread(target=process_url_and_notify, args=(url, session_id))
                     thread.start()
             
-            elif commentary:
-                try:
-                    line_bot_api.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text="記憶しました！")]))
-                except Exception:
-                    pass
 
 # URL処理をバックグラウンドで行うための関数
 def process_url_and_notify(url, session_id):
@@ -388,7 +380,7 @@ def handle_image_message(event):
                 )
             )
 
-            # 【ここが修正点】LINEのサーバーから画像データをバイトの塊として直接受け取る
+            # LINEのサーバーから画像データをバイトの塊として直接受け取る
             image_data_bytes = line_bot_blob_api.get_message_content(message_id=message_id)
             
             # 受け取ったバイトデータをPillowで画像として開く
@@ -472,8 +464,7 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
             raw_text += page.get_text()
         doc.close()
         print("PyMuPDFでの処理が完了しました。")
-
-        # ★★★ ここからがOCR機能の追加部分 ★★★
+        
         # 2. テキストが空っぽだったら、GeminiのOCR機能を使う
         if not raw_text.strip():
             print("テキストが空のため、Gemini OCRに切り替えます。")
@@ -495,7 +486,7 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
             ])
             raw_text = response.text
             print("GeminiによるOCR処理が完了しました。")
-        # ★★★ ここまでがOCR機能の追加部分 ★★★
+        
 
         # 3. Gemini APIを使って要約を作成する
         summary = ""
@@ -532,7 +523,7 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
             line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
             
     finally:
-        # ★★★ 一時ファイルの後片付けを追加 ★★★
+        # 一時ファイルの後片付け
         # サーバーに一時的に保存したPDFファイルを削除する
         if os.path.exists(temp_pdf_path):
             os.remove(temp_pdf_path)
