@@ -25,12 +25,11 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from datetime import datetime, timezone
 from flask import jsonify 
 from flask_cors import CORS
-import threading  
-import fitz      
+import threading # 時間のかかる処理をバックグラウンドで行うために追加
+import fitz      # PyMuPDFライブラリ。PDFのテキストを抽出するために使用
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
-from google.auth.transport.requests import Request as GoogleAuthRequest
 
 # .envファイルから環境変数を読み込む
 load_dotenv()
@@ -502,147 +501,167 @@ def process_image_and_notify(user_id, session_id, image_bytes):
             line_bot_api = MessagingApi(api_client)
             line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"画像の処理中にエラーが発生しました。")]))
 
-# ### PDFアップロード関連の新しい関数群 ###
-# ### PDFアップロード関連の修正後コード ###
-
-def get_drive_service():
-    """Google Drive APIのサービスオブジェクトを安全に取得する関数"""
+def upload_to_google_drive_and_get_link(pdf_bytes, filename):
+    """Google Driveにファイルをアップロードし、共有リンクを返す"""
     try:
-        creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
-        if not creds_json_str:
-            raise ValueError("環境変数 'GOOGLE_CREDENTIALS_JSON' が設定されていません。")
-
-        creds_info = json.loads(creds_json_str)
-        creds = service_account.Credentials.from_service_account_info(
-            creds_info,
-            scopes=['https://www.googleapis.com/auth/drive']
-        )
-
-        # ★★★ ここが修正点 ★★★
-        # 認証情報をリフレッシュして、有効なアクセストークンを確実に取得
-        # 正しいリクエストオブジェクト（GoogleAuthRequest）を使用します。
-        creds.refresh(GoogleAuthRequest())
-
-        return build('drive', 'v3', credentials=creds)
-    except Exception as e:
-        print(f"Google Driveサービスオブジェクトの作成中にエラー: {e}")
-        return None
-
-@app.route('/initiate-upload', methods=['POST'])
-def initiate_upload():
-    """LIFFからのリクエストを受け、Google Driveのアップロード専用URLを発行する"""
-    try:
-        data = request.get_json()
-        filename = data.get('filename')
-        if not filename:
-            return jsonify({'status': 'error', 'message': 'Filename is required'}), 400
-
-        print(f"アップロードセッション開始リクエストを受信: {filename}")
-
-        # ★★★ ここからが修正部分 ★★★
-        # 認証情報オブジェクトをこの場で直接作成する
-        creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
-        if not creds_json_str:
-            raise ValueError("環境変数 'GOOGLE_CREDENTIALS_JSON' が設定されていません。")
+        print("Google Driveへのアップロードを開始します。")
         
+        
+        # 環境変数からJSON文字列を読み込む
+        creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
+        if not creds_json_str:
+            print("環境変数 'GOOGLE_CREDENTIALS_JSON' が設定されていません。")
+            return None
+        
+        # JSON文字列を辞書型に変換
         creds_info = json.loads(creds_json_str)
+        
+        # ファイルからではなく、辞書情報から認証情報を作成する
         creds = service_account.Credentials.from_service_account_info(
             creds_info,
             scopes=['https://www.googleapis.com/auth/drive']
         )
-        creds.refresh(GoogleAuthRequest()) # トークンをリフレッシュ
-
-        # 上記で作成した認証情報（creds）からアクセストークンを取得する
-        access_token = creds.token
         # ★★★ ここまでが修正部分 ★★★
+        
+        service = build('drive', 'v3', credentials=creds)
 
         file_metadata = {
             'name': filename,
             'parents': [GOOGLE_DRIVE_FOLDER_ID]
         }
         
-        response = requests.post(
-            'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
-            headers={
-                'Authorization': f'Bearer {access_token}', # 正しいトークンを使用
-                'Content-Type': 'application/json; charset=UTF-8',
-            },
-            data=json.dumps(file_metadata)
-        )
-        response.raise_for_status()
+        media = MediaIoBaseUpload(BytesIO(pdf_bytes), mimetype='application/pdf')
         
-        upload_url = response.headers['Location']
-        print("アップロード用URLの発行に成功しました。")
+        file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, webViewLink'
+        ).execute()
+
+        # アップロードしたファイルを一般公開してリンクを取得
+        file_id = file.get('id')
+        permission = {'type': 'anyone', 'role': 'reader'}
+        service.permissions().create(fileId=file_id, body=permission).execute()
         
-        return jsonify({'status': 'success', 'upload_url': upload_url}), 200
+        print("Google Driveへのアップロードと共有設定が完了しました。")
+        return file.get('webViewLink')
 
     except Exception as e:
-        print(f"アップロードセッションの開始中にエラー: {e}")
-        return jsonify({'status': 'error', 'message': f'Failed to initiate session: {str(e)}'}), 500
+        print(f"Google Driveへのアップロード中にエラー: {e}")
+        return None
 
-
-def process_uploaded_pdf(drive_file_id, filename, context_id):
-    """Google Drive上のPDFファイルを処理するバックグラウンドタスク"""
-    print(f"バックグラウンド処理開始: {filename} (Drive File ID: {drive_file_id})")
-    drive_link = f"https://drive.google.com/file/d/{drive_file_id}/view?usp=sharing"
+# PDF処理を裏方で行う
+def process_pdf_and_notify(pdf_bytes, filename, context_id):
+    """
+    PDFを受け取り、★Drive保存★、テキスト抽出、要約、DB保存、LINE通知を行う
+    """
+    print(f"バックグラウンドでPDF処理を開始: {filename}")
+    raw_text = ""
+    temp_pdf_path = f"temp_{filename}"
+    drive_link = "" # ★Driveのリンクを保存する変数を追加
 
     try:
-        # 1. Google Driveからファイルをダウンロード (よりシンプルな方法に修正)
-        print("Google Driveからファイルをダウンロードしています...")
-        service = get_drive_service()
-        if not service:
-            raise Exception("Driveサービスを作成できませんでした。")
-        
-        media_request = service.files().get_media(fileId=drive_file_id)
-        pdf_bytes = media_request.execute()
+        # ★★★ ここからがDriveアップロード処理 ★★★
+        drive_link = upload_to_google_drive_and_get_link(pdf_bytes, filename)
+        if not drive_link:
+            drive_link = "ファイルの共有リンク作成に失敗しました。"
+        # ★★★ ここまで ★★★
 
-        # 2. テキスト抽出
-        raw_text = ""
+        # 1. PyMuPDFでテキスト抽出
+        print("PyMuPDFでテキスト抽出を試みています...")
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         for page in doc:
             raw_text += page.get_text()
         doc.close()
+        print("PyMuPDFでの処理が完了しました。")
 
-        # 3. テキストが空ならGemini OCR (より確実な方法に修正)
+        # 2. テキストが空ならGemini OCR
         if not raw_text.strip():
             print("テキストが空のため、Gemini OCRに切り替えます。")
-            temp_pdf_path = f"temp_{filename}"
             with open(temp_pdf_path, "wb") as f:
                 f.write(pdf_bytes)
-            
-            uploaded_file = genai.upload_file(path=temp_pdf_path, display_name=filename)
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            response = model.generate_content(["このPDFファイルに書かれているテキストを全て書き出して", uploaded_file])
-            raw_text = response.text
-            os.remove(temp_pdf_path) # 一時ファイルを削除
 
-        # 4. 要約作成 ...（以降の処理は変更なし）
+            print("GeminiのFile APIにPDFをアップロード中...")
+            uploaded_file = genai.upload_file(path=temp_pdf_path, display_name=filename)
+            
+            print("GeminiにOCR処理をリクエスト中...")
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content([
+                "このPDFファイルに書かれているテキストを、すべて書き出して日本語で出力してください。",
+                uploaded_file
+            ])
+            raw_text = response.text
+            print("GeminiによるOCR処理が完了しました。")
+
+        # 3. Gemini APIで要約作成
         summary = ""
         try:
+            print("Gemini APIで要約を生成しています...")
             summarize_prompt = f"以下の文章を、重要なポイントを3点に絞って箇条書きで要約してください。\n\n---\n\n{raw_text[:8000]}"
             model = genai.GenerativeModel('gemini-1.5-flash-latest')
             response = model.generate_content(summarize_prompt)
             summary = response.text.strip()
+            print("要約の生成に成功しました。")
         except Exception as e:
-            summary = f"要約の生成に失敗しました。"
+            print(f"要約の生成中にエラー: {e}")
+            summary = "要約の生成に失敗しました。"
 
-        # 5. DBに保存
+        # 4. テキストをDBに保存
         cleaned_text = clean_text(raw_text)
-        is_success = chunk_and_store_text(cleaned_text, title=filename, source_url=drive_link)
+        is_success = chunk_and_store_text(cleaned_text, title=filename, source_url=filename)
 
-        # 6. LINEに通知
+        # 5. LINEに通知（★メッセージ内容を修正★）
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
-            message_text = f"PDF「{filename}」を記憶しました！\n\n【AIによる3行要約】\n{summary}\n\nファイルリンク:\n{drive_link}"
-            line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[TextMessage(text=message_text)]))
-
-    except Exception as e:
-        print(f"バックグラウンド処理中にエラー: {e}")
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            message = TextMessage(text=f"PDF「{filename}」の処理中にエラーが発生しました。\n\nファイルリンク:\n{drive_link}")
+            if is_success:
+                message_text = f"PDF「{filename}」を記憶しました！\n\n【AIによる3行要約】\n{summary}\n\nファイルリンク:\n{drive_link}"
+                message = TextMessage(text=message_text)
+            else:
+                message = TextMessage(text=f"PDF「{filename}」の保存に失敗しました。")
             line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
 
+    except Exception as e:
+        print(f"バックグラウンドでのPDF処理中にエラー: {e}")
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            message_text = f"PDF「{filename}」の処理中にエラーが発生しました。\n\nファイルリンク:\n{drive_link}"
+            message = TextMessage(text=message_text)
+            line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
+            
+    finally:
+        if os.path.exists(temp_pdf_path):
+            os.remove(temp_pdf_path)
+            print(f"一時ファイル {temp_pdf_path} を削除しました。")
+
+# PDF読み取り ---
+@app.route('/upload', methods=['POST'])
+def handle_upload():
+    """LIFFからのファイルアップロードを受け取り、バックグラウンド処理を開始する"""
+    try:
+        if 'pdf_file' not in request.files:
+            return jsonify({'status': 'error', 'message': 'File part is missing'}), 400
+
+        file = request.files['pdf_file']
+        context_id = request.form.get('contextId')
+
+        if file.filename == '' or not context_id:
+            return jsonify({'status': 'error', 'message': 'File or contextId is missing'}), 400
+
+        # ファイルの中身をバイトデータとして読み込む
+        pdf_bytes = file.read()
+        filename = file.filename
+
+        # 時間のかかる処理をバックグラウンドのスレッドで実行する
+        thread = threading.Thread(target=process_pdf_and_notify, args=(pdf_bytes, filename, context_id))
+        thread.start()
+
+        # LIFF画面にはすぐに「受け付けたよ」と応答を返す
+        return jsonify({'status': 'success', 'message': 'File upload received. Processing in background.'}), 200
+
+    except Exception as e:
+        # 2つあったexceptを1つにまとめました
+        print(f"アップロード受付中にエラーが発生しました: {e}")
+        return jsonify({'status': 'error', 'message': 'An error occurred on the server'}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
