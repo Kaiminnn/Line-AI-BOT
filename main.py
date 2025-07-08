@@ -303,6 +303,21 @@ def handle_text_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
+        # ★★★ ここからが追加部分 ★★★
+        # 1. まずキーワードをチェックする
+        if 'pdf' in message_text.lower(): # メッセージを小文字にして'pdf'が含まれるかチェック
+            liff_url = "https://starlit-alfajores-f1b64c.netlify.app/" # あなたのLIFFのURL
+            reply_text = f"PDFをアップロードするには、こちらの専用ページをご利用ください。\n{liff_url}"
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text=reply_text)]
+                )
+            )
+            return # 案内を送ったら、ここで処理を終了する
+        # ★★★ ここまでが追加部分 ★★★
+
+        # 2. キーワードに当てはまらない場合は、今までの処理を続ける
         if message_text.startswith(("質問：", "質問:")):
             question = message_text.replace("質問：", "", 1).replace("質問:", "", 1).strip()
             answer = answer_question(question, user_id, session_id)
@@ -327,7 +342,6 @@ def handle_text_message(event):
             
             if urls:
                 try:
-                    # URLが含まれている場合は、先に返信する
                     line_bot_api.reply_message(
                         ReplyMessageRequest(
                             reply_token=reply_token,
