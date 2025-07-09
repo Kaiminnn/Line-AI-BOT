@@ -397,11 +397,7 @@ def process_url_and_notify(url, session_id):
             if is_success:
                 # 成功した場合、メッセージにタイトルと要約を追加する
                 title = scraped_data.get('title', 'タイトル不明')
-                message_text = (
-                    f"【完了】URLの内容を記憶しました！\n\n"
-                    f"『{title}』\n\n"
-                    f"【AIによる3行要約】\n{summary}\n\n"
-                    f"URL:\n{url}"
+                message_text = "ぽちはかしこいからURLの内容は理解したぽち"
                 )
                 line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=message_text)]))
             else:
@@ -616,7 +612,7 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             if is_success:
-                message_text = f"PDF「{filename}」を記憶しました！\n\n【AIによる3行要約】\n{summary}\n\nファイルリンク:\n{drive_link}"
+                message_text = f"PDF「{filename}」を理解したぽち\n\nファイルリンク:\n{drive_link}"
                 message = TextMessage(text=message_text)
             else:
                 message = TextMessage(text=f"PDF「{filename}」の保存に失敗しました。")
