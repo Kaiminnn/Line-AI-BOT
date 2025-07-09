@@ -398,7 +398,6 @@ def process_url_and_notify(url, session_id):
                 # 成功した場合、メッセージにタイトルと要約を追加する
                 title = scraped_data.get('title', 'タイトル不明')
                 message_text = "ぽちはかしこいからURLの内容は理解したぽち"
-                )
                 line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=message_text)]))
             else:
                 # 失敗した場合は、従来通りのメッセージを送信
