@@ -349,7 +349,6 @@ def handle_text_message(event):
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
-    # ... (内容は変更なし)
     source = event.source
     session_id = source.group_id if source.type == 'group' else source.user_id
     user_id = source.user_id
