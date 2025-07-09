@@ -308,7 +308,7 @@ def handle_text_message(event):
         if message_text.lower() == 'pdf':
             liff_url = "https://starlit-alfajores-f1b64c.netlify.app/" #
             liff_url = "https://starlit-alfajores-f1b64c.netlify.app/liff.html" #
-            reply_text = f"PDFはここに送るぽち！\n{liff_url}"
+            reply_text = f"PDFはここに送るぽち！大きいPDFは読めないから気をつけるによ\n{liff_url}"
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
