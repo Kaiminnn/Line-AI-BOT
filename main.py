@@ -369,6 +369,7 @@ def process_url_and_notify(url, session_id):
 
         summary = "" # 要約を格納する変数を初期化
         if is_success:
+            pass # if文の中身として「何もしない」という命令を記述する、今後PDFの要約を使うならpassを消して、下の＃を全て消す
 #            # 2. DB保存が成功したら、Geminiで要約を試みる
 #            try:
 #                print("Gemini APIでURL内容の要約を生成しています...")
