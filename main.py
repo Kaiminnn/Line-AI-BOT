@@ -308,7 +308,7 @@ def handle_text_message(event):
         if message_text.lower() == 'pdf':
             liff_url = "https://starlit-alfajores-f1b64c.netlify.app/" #
             liff_url = "https://starlit-alfajores-f1b64c.netlify.app/liff.html" #
-            reply_text = f"PDFをアップは、ここから！\n{liff_url}"
+            reply_text = f"PDFはここに送るぽち！\n{liff_url}"
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
@@ -346,7 +346,7 @@ def handle_text_message(event):
                     line_bot_api.reply_message(
                         ReplyMessageRequest(
                             reply_token=reply_token,
-                            messages=[TextMessage(text=f"メッセージと{len(urls)}件のURL、承知しました。内容を読んで記憶しますね。")]
+                            messages=[TextMessage(text=f"{len(urls)}件のURL受け取ったぽち。")]
                         )
                     )
                 except Exception as e:
