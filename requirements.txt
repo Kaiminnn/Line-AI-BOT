@@ -1,5 +1,5 @@
 flask
-line-bot-sdk>=3.9.0
+line-bot-sdk
 google-generativeai
 psycopg2-binary
 sqlalchemy
