@@ -369,26 +369,26 @@ def process_url_and_notify(url, session_id):
 
         summary = "" # 要約を格納する変数を初期化
         if is_success:
-            # 2. DB保存が成功したら、Geminiで要約を試みる
-            try:
-                print("Gemini APIでURL内容の要約を生成しています...")
-                # 長すぎるテキストは予期せぬエラーを防ぐため、ある程度の長さでカットする
-                text_for_summary = cleaned_text[:15000] 
+#            # 2. DB保存が成功したら、Geminiで要約を試みる
+#            try:
+#                print("Gemini APIでURL内容の要約を生成しています...")
+#                # 長すぎるテキストは予期せぬエラーを防ぐため、ある程度の長さでカットする
+#                text_for_summary = cleaned_text[:15000] 
 
-                summarize_prompt = f"""以下の記事の内容を、最も重要なポイントを3点に絞って、箇条書きで簡潔に要約してください。
-
-# 記事本文
-{text_for_summary}
-
-# 要約
-"""
-                model = genai.GenerativeModel('gemini-1.5-flash-latest')
-                response = model.generate_content(summarize_prompt)
-                summary = response.text.strip()
-                print("要約の生成に成功しました。")
-            except Exception as e:
-                print(f"要約の生成中にエラー: {e}")
-                summary = "要約の生成に失敗しました。"
+#                summarize_prompt = f"""以下の記事の内容を、最も重要なポイントを3点に絞って、箇条書きで簡潔に要約してください。
+#
+## 記事本文
+#{text_for_summary}
+#
+## 要約
+#"""
+#                model = genai.GenerativeModel('gemini-1.5-flash-latest')
+#                response = model.generate_content(summarize_prompt)
+#                summary = response.text.strip()
+#                print("要約の生成に成功しました。")
+#            except Exception as e:
+#                print(f"要約の生成中にエラー: {e}")
+#                summary = "要約の生成に失敗しました。"
 
         # 3. LINEに通知メッセージを送信する
         with ApiClient(configuration) as api_client:
@@ -596,16 +596,16 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
 
         # 3. Gemini APIで要約作成
         summary = ""
-        try:
-            print("Gemini APIで要約を生成しています...")
-            summarize_prompt = f"以下の文章を、重要なポイントを3点に絞って箇条書きで要約してください。\n\n---\n\n{raw_text[:8000]}"
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            response = model.generate_content(summarize_prompt)
-            summary = response.text.strip()
-            print("要約の生成に成功しました。")
-        except Exception as e:
-            print(f"要約の生成中にエラー: {e}")
-            summary = "要約の生成に失敗しました。"
+        #try:
+        #    print("Gemini APIで要約を生成しています...")
+        #    summarize_prompt = f"以下の文章を、重要なポイントを3点に絞って箇条書きで要約してください。\n\n---\n\n{raw_text[:8000]}"
+        #    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        #    response = model.generate_content(summarize_prompt)
+        #    summary = response.text.strip()
+        #    print("要約の生成に成功しました。")
+        #except Exception as e:
+        #    print(f"要約の生成中にエラー: {e}")
+        #    summary = "要約の生成に失敗しました。"
 
         # 4. テキストをDBに保存
         cleaned_text = clean_text(raw_text)
