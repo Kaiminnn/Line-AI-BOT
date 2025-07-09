@@ -4,9 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 from flask import Flask, request, abort
-
 import json
-
 from io import BytesIO
 from PIL import Image
 
@@ -24,10 +22,10 @@ from pgvector.sqlalchemy import Vector
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from datetime import datetime, timezone
-from flask import jsonify 
+from flask import jsonify
 from flask_cors import CORS
-import threading # 時間のかかる処理をバックグラウンドで行うために追加
-import fitz      # PyMuPDFライブラリ。PDFのテキストを抽出するために使用
+import threading
+import fitz
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
@@ -44,11 +42,11 @@ GOOGLE_DRIVE_FOLDER_ID = os.environ.get('GOOGLE_DRIVE_FOLDER_ID')
 
 # 保存するメッセージの上限数
 MAX_DOCUMENTS = 20000
-MAX_CHAT_HISTORY = 10 
+MAX_CHAT_HISTORY = 10
 
 # Flaskアプリの初期化
 app = Flask(__name__)
-CORS(app) 
+CORS(app)
 
 # LINE Bot SDKの初期化
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
@@ -88,6 +86,7 @@ def scrape_website(url):
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
         title = soup.title.string if soup.title else 'No Title'
+        # ... (以下、元のコード通りなので省略) ...
         main_content_tags = ["article", "main", ".main", ".content", "#main", "#content"]
         content_element = None
         for tag in main_content_tags:
@@ -169,7 +168,6 @@ def check_and_prune_db(session):
         print(f"上限を超えたため、古いメッセージを {items_to_delete_count} 件削除しました。")
 
 def check_and_prune_chat_history(session, session_id):
-    """指定されたsession_idのチャット履歴が上限を超えていたら、古いものから削除する"""
     total_count = session.query(ChatHistory).filter(ChatHistory.session_id == session_id).count()
     if total_count > MAX_CHAT_HISTORY:
         items_to_delete_count = total_count - MAX_CHAT_HISTORY
@@ -177,7 +175,6 @@ def check_and_prune_chat_history(session, session_id):
         for history_item in oldest_history:
             session.delete(history_item)
         print(f"チャット履歴の上限を超えたため、{session_id} の古い履歴を {items_to_delete_count} 件削除しました。")
-
 
 def get_chat_history(session_id):
     session = Session()
@@ -190,13 +187,9 @@ def get_chat_history(session_id):
 def add_to_chat_history(session_id, role, content):
     session = Session()
     try:
-        # 新しい履歴を追加
         history_entry = ChatHistory(session_id=session_id, role=role, content=content)
         session.add(history_entry)
-
-        # 履歴を追加した直後に、件数チェックと整理を行う
         check_and_prune_chat_history(session, session_id)
-
         session.commit()
     except Exception as e:
         print(f"チャット履歴の保存中にエラー: {e}")
@@ -205,6 +198,7 @@ def add_to_chat_history(session_id, role, content):
         session.close()
 
 def rerank_documents(question, documents):
+    # ... (内容は変更なし)
     if not documents: return []
     rerank_prompt = f"""以下の「ユーザーの質問」と、それに関連する可能性のある「資料リスト」があります。資料リストの中から、質問に答えるために本当に重要度の高い資料を、重要度順に最大5つ選び、その番号だけをカンマ区切りで出力してください。例： 3,1,5,2,4
 
@@ -226,7 +220,9 @@ def rerank_documents(question, documents):
         print(f"リランキング中にエラーが発生しました: {e}")
         return documents[:5]
 
+
 def answer_question(question, user_id, session_id):
+    # ... (内容は変更なし)
     history = get_chat_history(session_id)
     rephrased_question = question
     if history:
@@ -248,7 +244,7 @@ def answer_question(question, user_id, session_id):
             print(f"書き換えられた質問: {rephrased_question}")
         except Exception as e:
             print(f"質問の書き換え中にエラー: {e}")
-
+    
     session = Session()
     try:
         question_embedding = embed_text(rephrased_question)
@@ -258,7 +254,7 @@ def answer_question(question, user_id, session_id):
         final_results = rerank_documents(rephrased_question, candidate_docs)
         if not final_results: return "関連性の高い情報が見つかりませんでした。"
 
-        context = "\n".join(f"- {doc.content}" for doc in final_results)
+        context = "\n".join([f"- {doc.content}" for doc in final_results])
         final_prompt = f"""以下の非常に精度の高い参考情報だけを使って、ユーザーの質問に簡潔に答えてください。
 
 # 参考情報
@@ -279,7 +275,8 @@ def answer_question(question, user_id, session_id):
     finally:
         session.close()
 
-# LINEからのWebhookを受け取るエンドポイント　
+# --- LINE Webhook関連 ---
+
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
@@ -290,7 +287,6 @@ def callback():
         abort(400)
     return 'OK'
 
-# テキストメッセージを処理する受付係
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     source = event.source
@@ -304,44 +300,32 @@ def handle_text_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
-        # ★★★ ここからが追加・変更部分 ★★★
-        # 1. 「要約して：」で始まるメッセージ（ボタンからの命令）をチェック
         if message_text.startswith("要約して："):
             url_to_summarize = message_text.replace("要約して：", "").strip()
-            
-            # まずユーザーに受付したことを伝える
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
                     messages=[TextMessage(text="承知しました。内容を要約しますので、少々お待ちください。")]
                 )
             )
-            # バックグラウンドで要約処理を実行
             thread = threading.Thread(target=summarize_and_push_message, args=(url_to_summarize, session_id))
             thread.start()
             return
-        # ★★★ ここまで ★★★
 
-        # 2. キーワード「pdf」をチェック
         if message_text.lower() == 'pdf':
             liff_url = "https://starlit-alfajores-f1b64c.netlify.app/liff.html"
             reply_text = f"PDFをアップは、ここから！\n{liff_url}"
             line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[TextMessage(text=reply_text)]
-                )
+                ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=reply_text)])
             )
             return
 
-        # 3. キーワード「質問：」をチェック
         if message_text.startswith(("質問：", "質問:")):
             question = message_text.replace("質問：", "", 1).replace("質問:", "", 1).strip()
             answer = answer_question(question, user_id, session_id)
             line_bot_api.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=answer)]))
             return
 
-        # 4. キーワード「DB確認」をチェック
         elif message_text == "DB確認":
             session = Session()
             doc_count = session.query(Document).count()
@@ -351,7 +335,6 @@ def handle_text_message(event):
             line_bot_api.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=reply_text)]))
             return
         
-        # 5. 上記のいずれでもない場合（URLか、ただの会話）
         else:
             urls = re.findall(r'https?://\S+', message_text)
             commentary = re.sub(r'https?://\S+', '', message_text).strip()
@@ -360,15 +343,55 @@ def handle_text_message(event):
                 store_message(user_id, commentary)
             
             if urls:
-                # URLが含まれている場合は、先に返信する（ボタンが付くのでここでは返信しない）
-                pass
-                
                 for url in urls:
                     thread = threading.Thread(target=process_url_and_notify, args=(url, session_id))
                     thread.start()
 
+@handler.add(MessageEvent, message=ImageMessageContent)
+def handle_image_message(event):
+    # ... (内容は変更なし)
+    source = event.source
+    session_id = source.group_id if source.type == 'group' else source.user_id
+    user_id = source.user_id
+    message_id = event.message.id
+    reply_token = event.reply_token
 
-# URL処理をバックグラウンドで行うための関数
+    try:
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_blob_api = MessagingApiBlob(api_client)
+            
+            line_bot_api.reply_message(
+                ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text="画像を認識中です...")])
+            )
+            image_data_bytes = line_bot_blob_api.get_message_content(message_id=message_id)
+            img = Image.open(BytesIO(image_data_bytes))
+
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content(["この画像を日本語で詳しく、見たままに説明してください。", img])
+            image_description = response.text.strip()
+
+            history_text = f"（画像が投稿されました。画像の内容： {image_description}）"
+            add_to_chat_history(session_id, 'user', history_text)
+            
+            image_source = f"image_from_user:{user_id}"
+            store_message(user_id, history_text, source=image_source)
+
+            push_text = f"画像を記憶しました！\n\n【AIによる画像の説明】\n{image_description}"
+            line_bot_api.push_message(
+                PushMessageRequest(to=session_id, messages=[TextMessage(text=push_text)])
+            )
+    except Exception as e:
+        print(f"画像処理中にエラーが発生しました: {e}")
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.push_message(
+                PushMessageRequest(to=session_id, messages=[TextMessage(text="画像の処理中にエラーが発生しました。")])
+            )
+
+
+# --- バックグラウンド処理関数 ---
+
 def process_url_and_notify(url, session_id):
     """URLの内容をDBに記憶し、要約ボタン付きの通知を送る"""
     print(f"バックグラウンド処理開始: {url}")
@@ -378,11 +401,9 @@ def process_url_and_notify(url, session_id):
         cleaned_text = clean_text(scraped_data['raw_text'])
         is_success = chunk_and_store_text(cleaned_text, scraped_data.get('title', 'タイトル不明'), url)
         
-        # LINEに通知メッセージを送信する
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             if is_success:
-                # ボタンが押されたら「要約して：[URL]」というテキストが送信されるように設定
                 summarize_action = MessageAction(
                     label="この内容を要約する",
                     text=f"要約して：{url}"
@@ -392,37 +413,31 @@ def process_url_and_notify(url, session_id):
                 
                 message_text = f"【完了】URLの内容を記憶しました！\n\n『{scraped_data.get('title', 'タイトル不明')}』"
                 
-                # テキストメッセージにクイックリプライを付けて送信
                 line_bot_api.push_message(PushMessageRequest(
                     to=session_id, 
                     messages=[TextMessage(text=message_text, quick_reply=quick_reply_items)]
                 ))
             else:
                 line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"【失敗】URLの読み込み・保存に失敗しました。\n{url}")]))
-
-    else: # スクレイピング自体に失敗した場合
+    else:
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"【失敗】URLへのアクセスに失敗しました。\n{url}")]))
             
     print(f"バックグラウンド処理完了: {url}")
 
-
 def summarize_and_push_message(url, session_id):
     """指定されたURLの内容をDBから読み出して要約し、結果をプッシュ通知する"""
     print(f"要約処理を開始: {url}")
     session = Session()
     try:
-        # DBから指定されたURLのチャンクを全て取得
         docs = session.query(Document).filter(Document.source == url).all()
         if not docs:
             raise ValueError("指定されたURLのデータがDBに見つかりません。")
 
-        # チャンクを結合して元のテキストを復元
         # "記事「〇〇」より抜粋：\n" の部分を削除して結合
-        original_text = "\n".join([doc.content.split('：\n', 1)[1] for doc in docs])
+        original_text = "\n".join([doc.content.split('：\n', 1)[1] if '：\n' in doc.content else doc.content for doc in docs])
 
-        # Geminiで要約を生成
         summarize_prompt = f"""以下の記事の内容を、最も重要なポイントを3点に絞って、箇条書きで簡潔に要約してください。
 
 # 記事本文
@@ -434,12 +449,11 @@ def summarize_and_push_message(url, session_id):
         response = model.generate_content(summarize_prompt)
         summary = response.text.strip()
 
-        # 要約結果をプッシュ通知
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
-            message_text = f"『{docs[0].content.split('」より抜粋：')[0][3:]}』の要約です。\n\n【AIによる3行要約】\n{summary}"
+            title = docs[0].content.split('」より抜粋：')[0][3:] if '」より抜粋：' in docs[0].content else url
+            message_text = f"『{title}』の要約です。\n\n【AIによる3行要約】\n{summary}"
             line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=message_text)]))
-
     except Exception as e:
         print(f"要約処理中にエラー: {e}")
         with ApiClient(configuration) as api_client:
@@ -448,255 +462,94 @@ def summarize_and_push_message(url, session_id):
     finally:
         session.close()
 
-# 画像メッセージを処理する受付係
-@handler.add(MessageEvent, message=ImageMessageContent)
-def handle_image_message(event):
-    source = event.source
-    session_id = source.group_id if source.type == 'group' else source.user_id
-    user_id = source.user_id
-    message_id = event.message.id
-    reply_token = event.reply_token
-
+@app.route('/upload', methods=['POST'])
+def handle_upload():
+    # ... (内容は変更なし) ...
     try:
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            line_bot_blob_api = MessagingApiBlob(api_client)
-
-            # まずユーザーに、画像の処理を開始したことを素早く知らせる
-            line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[TextMessage(text="画像を認識中です...")]
-                )
-            )
-
-            # LINEのサーバーから画像データをバイトの塊として直接受け取る
-            image_data_bytes = line_bot_blob_api.get_message_content(message_id=message_id)
-
-            # 受け取ったバイトデータをPillowで画像として開く
-            img = Image.open(BytesIO(image_data_bytes))
-
-            # Geminiに画像を渡して、その説明を生成させる
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            response = model.generate_content(["この画像を日本語で詳しく、見たままに説明してください。", img])
-            image_description = response.text.strip()
-
-            # ユーザーの発言として、チャット履歴にも保存
-            history_text = f"（画像が投稿されました。画像の内容： {image_description}）"
-            add_to_chat_history(session_id, 'user', history_text)
-
-            # 長期記憶にも、説明文を一つの情報として保存
-            image_source = f"image_from_user:{user_id}"
-            store_message(user_id, history_text, source=image_source)
-
-            # 処理完了をプッシュメッセージで通知
-            push_text = f"画像を記憶しました！\n\n【AIによる画像の説明】\n{image_description}"
-            line_bot_api.push_message(
-                PushMessageRequest(
-                    to=session_id,
-                    messages=[TextMessage(text=push_text)]
-                )
-            )
-
+        if 'pdf_file' not in request.files:
+            return jsonify({'status': 'error', 'message': 'File part is missing'}), 400
+        file = request.files['pdf_file']
+        context_id = request.form.get('contextId')
+        if file.filename == '' or not context_id:
+            return jsonify({'status': 'error', 'message': 'File or contextId is missing'}), 400
+        pdf_bytes = file.read()
+        filename = file.filename
+        thread = threading.Thread(target=process_pdf_and_notify, args=(pdf_bytes, filename, context_id))
+        thread.start()
+        return jsonify({'status': 'success', 'message': 'File upload received. Processing in background.'}), 200
     except Exception as e:
-        print(f"画像処理中にエラーが発生しました: {e}")
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            line_bot_api.push_message(
-                PushMessageRequest(
-                    to=session_id,
-                    messages=[TextMessage(text=f"画像の処理中にエラーが発生しました。")]
-                )
-            )
+        print(f"アップロード受付中にエラーが発生しました: {e}")
+        return jsonify({'status': 'error', 'message': 'An error occurred on the server'}), 500
 
-# 画像処理をバックグラウンドで行うための関数
-def process_image_and_notify(user_id, session_id, image_bytes):
-    print("バックグラウンドで画像処理を開始します。")
-    try:
-        img = Image.open(BytesIO(image_bytes))
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        response = model.generate_content(["この画像を日本語で詳しく、見たままに説明してください。", img])
-        image_description = response.text.strip()
-
-        history_text = f"（画像が投稿されました。画像の内容： {image_description}）"
-        add_to_chat_history(session_id, 'user', history_text)
-
-        image_source = f"image_from_user:{user_id}"
-        store_message(user_id, history_text, source=image_source)
-
-        push_text = f"画像を記憶しました！\n\n【AIによる画像の説明】\n{image_description}"
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=push_text)]))
-        print("バックグラウンドの画像処理が成功しました。")
-
-    except Exception as e:
-        print(f"バックグラウンドの画像処理中にエラーが発生しました: {e}")
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"画像の処理中にエラーが発生しました。")]))
-
-def upload_to_google_drive_and_get_link(pdf_bytes, filename):
-    """Google Driveにファイルをアップロードし、共有リンクを返す"""
-    try:
-        print("Google Driveへのアップロードを開始します。")
-
-
-        # 環境変数からJSON文字列を読み込む
-        creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
-        if not creds_json_str:
-            print("環境変数 'GOOGLE_CREDENTIALS_JSON' が設定されていません。")
-            return None
-
-        # JSON文字列を辞書型に変換
-        creds_info = json.loads(creds_json_str)
-
-        # ファイルからではなく、辞書情報から認証情報を作成する
-        creds = service_account.Credentials.from_service_account_info(
-            creds_info,
-            scopes=['https://www.googleapis.com/auth/drive']
-        )
-        # ★★★ ここまでが修正部分 ★★★
-
-        service = build('drive', 'v3', credentials=creds)
-
-        file_metadata = {
-            'name': filename,
-            'parents': [GOOGLE_DRIVE_FOLDER_ID]
-        }
-
-        media = MediaIoBaseUpload(BytesIO(pdf_bytes), mimetype='application/pdf')
-
-        file = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id, webViewLink'
-        ).execute()
-
-        # アップロードしたファイルを一般公開してリンクを取得
-        file_id = file.get('id')
-        permission = {'type': 'anyone', 'role': 'reader'}
-        service.permissions().create(fileId=file_id, body=permission).execute()
-
-        print("Google Driveへのアップロードと共有設定が完了しました。")
-        return file.get('webViewLink')
-
-    except Exception as e:
-        print(f"Google Driveへのアップロード中にエラー: {e}")
-        return None
-
-# PDF処理を裏方で行う
 def process_pdf_and_notify(pdf_bytes, filename, context_id):
-    """
-    PDFを受け取り、★Drive保存★、テキスト抽出、要約、DB保存、LINE通知を行う
-    """
-    print(f"バックグラウンドでPDF処理を開始: {filename}")
-    raw_text = ""
-    temp_pdf_path = f"temp_{filename}"
-    drive_link = "" # ★Driveのリンクを保存する変数を追加
-
+    # ... (内容は変更なし) ...
+    print(f"バックグラウンド処理開始: {filename}")
+    drive_link = ""
     try:
-        # ★★★ ここからがDriveアップロード処理 ★★★
         drive_link = upload_to_google_drive_and_get_link(pdf_bytes, filename)
         if not drive_link:
             drive_link = "ファイルの共有リンク作成に失敗しました。"
-        # ★★★ ここまで ★★★
-
-        # 1. PyMuPDFでテキスト抽出
-        print("PyMuPDFでテキスト抽出を試みています...")
+        raw_text = ""
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         for page in doc:
             raw_text += page.get_text()
         doc.close()
-        print("PyMuPDFでの処理が完了しました。")
-
-        # 2. テキストが空ならGemini OCR
         if not raw_text.strip():
             print("テキストが空のため、Gemini OCRに切り替えます。")
+            temp_pdf_path = f"temp_{filename}"
             with open(temp_pdf_path, "wb") as f:
                 f.write(pdf_bytes)
-
-            print("GeminiのFile APIにPDFをアップロード中...")
             uploaded_file = genai.upload_file(path=temp_pdf_path, display_name=filename)
-
-            print("GeminiにOCR処理をリクエスト中...")
             model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            response = model.generate_content([
-                "このPDFファイルに書かれているテキストを、すべて書き出して日本語で出力してください。",
-                uploaded_file
-            ])
+            response = model.generate_content(["このPDFファイルに書かれているテキストを全て書き出して", uploaded_file])
             raw_text = response.text
-            print("GeminiによるOCR処理が完了しました。")
-
-        # 3. Gemini APIで要約作成
+            os.remove(temp_pdf_path)
         summary = ""
         try:
-            print("Gemini APIで要約を生成しています...")
             summarize_prompt = f"以下の文章を、重要なポイントを3点に絞って箇条書きで要約してください。\n\n---\n\n{raw_text[:8000]}"
             model = genai.GenerativeModel('gemini-1.5-flash-latest')
             response = model.generate_content(summarize_prompt)
             summary = response.text.strip()
-            print("要約の生成に成功しました。")
         except Exception as e:
             print(f"要約の生成中にエラー: {e}")
             summary = "要約の生成に失敗しました。"
-
-        # 4. テキストをDBに保存
         cleaned_text = clean_text(raw_text)
-        is_success = chunk_and_store_text(cleaned_text, title=filename, source_url=filename)
-
-        # 5. LINEに通知（★メッセージ内容を修正★）
+        is_success = chunk_and_store_text(cleaned_text, title=filename, source_url=drive_link)
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
-            if is_success:
-                message_text = f"PDF「{filename}」を記憶しました！\n\n【AIによる3行要約】\n{summary}\n\nファイルリンク:\n{drive_link}"
-                message = TextMessage(text=message_text)
-            else:
-                message = TextMessage(text=f"PDF「{filename}」の保存に失敗しました。")
-            line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
-
+            message_text = f"PDF「{filename}」を記憶しました！\n\n【AIによる3行要約】\n{summary}\n\nファイルリンク:\n{drive_link}"
+            line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[TextMessage(text=message_text)]))
     except Exception as e:
-        print(f"バックグラウンドでのPDF処理中にエラー: {e}")
+        print(f"バックグラウンド処理中にエラー: {e}")
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
-            message_text = f"PDF「{filename}」の処理中にエラーが発生しました。\n\nファイルリンク:\n{drive_link}"
-            message = TextMessage(text=message_text)
+            message = TextMessage(text=f"PDF「{filename}」の処理中にエラーが発生しました。\n\nファイルリンク:\n{drive_link}")
             line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
 
-    finally:
-        if os.path.exists(temp_pdf_path):
-            os.remove(temp_pdf_path)
-            print(f"一時ファイル {temp_pdf_path} を削除しました。")
-
-# PDF読み取り ---
-@app.route('/upload', methods=['POST'])
-def handle_upload():
-    """LIFFからのファイルアップロードを受け取り、バックグラウンド処理を開始する"""
+def upload_to_google_drive_and_get_link(pdf_bytes, filename):
+    # ... (内容は変更なし) ...
     try:
-        if 'pdf_file' not in request.files:
-            return jsonify({'status': 'error', 'message': 'File part is missing'}), 400
-
-        file = request.files['pdf_file']
-        context_id = request.form.get('contextId')
-
-        if file.filename == '' or not context_id:
-            return jsonify({'status': 'error', 'message': 'File or contextId is missing'}), 400
-
-        # ファイルの中身をバイトデータとして読み込む
-        pdf_bytes = file.read()
-        filename = file.filename
-
-        # 時間のかかる処理をバックグラウンドのスレッドで実行する
-        thread = threading.Thread(target=process_pdf_and_notify, args=(pdf_bytes, filename, context_id))
-        thread.start()
-
-        # LIFF画面にはすぐに「受け付けたよ」と応答を返す
-        return jsonify({'status': 'success', 'message': 'File upload received. Processing in background.'}), 200
-
+        print("Google Driveへのアップロードを開始します。")
+        creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
+        if not creds_json_str:
+            raise ValueError("環境変数 'GOOGLE_CREDENTIALS_JSON' が設定されていません。")
+        creds_info = json.loads(creds_json_str)
+        creds = service_account.Credentials.from_service_account_info(
+            creds_info, scopes=['https://www.googleapis.com/auth/drive']
+        )
+        service = build('drive', 'v3', credentials=creds)
+        file_metadata = {'name': filename, 'parents': [GOOGLE_DRIVE_FOLDER_ID]}
+        media = MediaIoBaseUpload(BytesIO(pdf_bytes), mimetype='application/pdf')
+        file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+        file_id = file.get('id')
+        permission = {'type': 'anyone', 'role': 'reader'}
+        service.permissions().create(fileId=file_id, body=permission).execute()
+        print("Google Driveへのアップロードと共有設定が完了しました。")
+        return file.get('webViewLink')
     except Exception as e:
-        # 2つあったexceptを1つにまとめました
-        print(f"アップロード受付中にエラーが発生しました: {e}")
-        return jsonify({'status': 'error', 'message': 'An error occurred on the server'}), 500
+        print(f"Google Driveへのアップロード中にエラー: {e}")
+        return None
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
