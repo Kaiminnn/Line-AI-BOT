@@ -193,24 +193,26 @@ def check_and_prune_db(session):
 
 def check_and_prune_chat_history(session, session_id):
     """指定されたsession_idのチャット履歴が上限を超えていたら、古いものから削除する"""
-    # ★ print を logging.info に変更
-    logging.info(f"--- チャット履歴チェック開始: session_id={session_id} ---")
+    # ★★★ ここからがデバッグ用の追加部分 ★★★
+    # Koyebのログの代わりに、LINEに直接メッセージを送る
+    send_debug_message(session_id, f"--- チャット履歴チェック開始 ---")
     
     total_count = session.query(ChatHistory).filter(ChatHistory.session_id == session_id).count()
-    logging.info(f"現在の履歴数: {total_count}, 設定上限: {MAX_CHAT_HISTORY}")
+    send_debug_message(session_id, f"現在の履歴数: {total_count}, 設定上限: {MAX_CHAT_HISTORY}")
 
     if total_count > MAX_CHAT_HISTORY:
         items_to_delete_count = total_count - MAX_CHAT_HISTORY
-        logging.info(f"上限超過！ 古い履歴を {items_to_delete_count} 件削除します。")
+        send_debug_message(session_id, f"上限超過！ 古い履歴を {items_to_delete_count} 件削除します。")
         
         oldest_history = session.query(ChatHistory).filter(ChatHistory.session_id == session_id).order_by(ChatHistory.created_at.asc()).limit(items_to_delete_count).all()
         for history_item in oldest_history:
             session.delete(history_item)
-        logging.info(f"削除処理が完了しました。")
+        send_debug_message(session_id, f"削除処理が完了しました。")
     else:
-        logging.info("上限に達していないため、削除は行いません。")
+        send_debug_message(session_id, "上限に達していないため、削除は行いません。")
     
-    logging.info("--- チャット履歴チェック完了 ---")
+    send_debug_message(session_id, f"--- チャット履歴チェック完了 ---")
+    # ★★★ ここまで ★★★
 
 def get_chat_history(session_id):
     session = Session()
