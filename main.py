@@ -188,7 +188,7 @@ def answer_question(question, user_id, session_id):
     try:
         question_embedding = embed_text(question)
         if question_embedding is None: return "質問の解析に失敗しました。"
-        candidate_docs = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(10).all()
+        candidate_docs = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(15).all()
         if not candidate_docs: return "まだ情報が十分に蓄積されていないようです。"
         final_results = rerank_documents(question, candidate_docs)
         if not final_results: return "関連性の高い情報が見つかりませんでした。"
