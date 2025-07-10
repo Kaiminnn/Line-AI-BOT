@@ -226,38 +226,25 @@ def rerank_documents(question, documents):
         return documents[:5]
 
 def answer_question(question, user_id, session_id):
-    history = get_chat_history(session_id)
-    rephrased_question = question
-    if history:
-        history_text = "\n".join([f"{h.role}: {h.content}" for h in history])
-        prompt = f"""以下は、ユーザーとの直近の会話履歴です。この文脈を踏まえて、最後の「新しい質問」を、データベース検索に最適な、具体的で自己完結した一つの質問に書き換えてください。もし新しい質問が既に具体的であれば、そのまま出力してください。
-
-# 会話履歴
-{history_text}
-
-# 新しい質問
-{question}
-
-# 書き換えた検索用の質問：
-"""
-        try:
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            response = model.generate_content(prompt)
-            rephrased_question = response.text.strip()
-            print(f"書き換えられた質問: {rephrased_question}")
-        except Exception as e:
-            print(f"質問の書き換え中にエラー: {e}")
+    # --- 会話履歴の取得と、それに基づく質問の書き換え処理を削除 ---
+    # rephrased_question = question # この行も不要になる
 
     session = Session()
     try:
-        question_embedding = embed_text(rephrased_question)
+        # ユーザーの元の質問（question）をそのまま使ってベクトル化する
+        question_embedding = embed_text(question)
         if question_embedding is None: return "質問の解析に失敗しました。"
+
+        # 変更なし：ベクトル検索で関連情報を10件取得
         candidate_docs = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(10).all()
         if not candidate_docs: return "まだ情報が十分に蓄積されていないようです。"
-        final_results = rerank_documents(rephrased_question, candidate_docs)
+
+        # 変更なし：リランキングでさらに情報を絞り込む
+        final_results = rerank_documents(question, candidate_docs)
         if not final_results: return "関連性の高い情報が見つかりませんでした。"
 
-        context = "\n".join(f"- {doc.content}" for doc in final_results)
+        # 変更なし：最終的な回答を生成
+        context = "\n".join([f"- {doc.content}" for doc in final_results])
         final_prompt = f"""以下の非常に精度の高い参考情報だけを使って、ユーザーの質問に簡潔に答えてください。
 
 # 参考情報
@@ -272,6 +259,7 @@ def answer_question(question, user_id, session_id):
         final_response = model.generate_content(final_prompt)
         add_to_chat_history(session_id, 'model', final_response.text)
         return final_response.text
+        
     except Exception as e:
         print(f"質問応答中にエラーが発生しました: {e}")
         return "申し訳ありません、応答の生成中にエラーが発生しました。"
