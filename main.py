@@ -167,42 +167,6 @@ def check_and_prune_db(session):
         session.commit()
         print(f"上限を超えたため、古いメッセージを {items_to_delete_count} 件削除しました。")
 
-def check_and_prune_chat_history(session, session_id):
-    """指定されたsession_idのチャット履歴が上限を超えていたら、古いものから削除する"""
-    total_count = session.query(ChatHistory).filter(ChatHistory.session_id == session_id).count()
-    if total_count > MAX_CHAT_HISTORY:
-        items_to_delete_count = total_count - MAX_CHAT_HISTORY
-        oldest_history = session.query(ChatHistory).filter(ChatHistory.session_id == session_id).order_by(ChatHistory.created_at.asc()).limit(items_to_delete_count).all()
-        for history_item in oldest_history:
-            session.delete(history_item)
-        print(f"チャット履歴の上限を超えたため、{session_id} の古い履歴を {items_to_delete_count} 件削除しました。")
-
-
-def get_chat_history(session_id):
-    session = Session()
-    try:
-        history = session.query(ChatHistory).filter(ChatHistory.session_id == session_id).order_by(ChatHistory.created_at.desc()).limit(MAX_CHAT_HISTORY).all()
-        return history[::-1]
-    finally:
-        session.close()
-
-def add_to_chat_history(session_id, role, content):
-    session = Session()
-    try:
-        # 新しい履歴を追加
-        history_entry = ChatHistory(session_id=session_id, role=role, content=content)
-        session.add(history_entry)
-
-        # 履歴を追加した直後に、件数チェックと整理を行う
-        check_and_prune_chat_history(session, session_id)
-
-        session.commit()
-    except Exception as e:
-        print(f"チャット履歴の保存中にエラー: {e}")
-        session.rollback()
-    finally:
-        session.close()
-
 def rerank_documents(question, documents):
     if not documents: return []
     rerank_prompt = f"""以下の「ユーザーの質問」と、それに関連する可能性のある「資料リスト」があります。資料リストの中から、質問に答えるために本当に重要度の高い資料を、重要度順に最大5つ選び、その番号だけをカンマ区切りで出力してください。例： 3,1,5,2,4
@@ -257,7 +221,6 @@ def answer_question(question, user_id, session_id):
 """
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
         final_response = model.generate_content(final_prompt)
-        add_to_chat_history(session_id, 'model', final_response.text)
         return final_response.text
         
     except Exception as e:
@@ -285,8 +248,6 @@ def handle_text_message(event):
     user_id = source.user_id
     message_text = event.message.text
     reply_token = event.reply_token
-
-    add_to_chat_history(session_id, 'user', message_text)
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
@@ -433,7 +394,6 @@ def handle_image_message(event):
 
             # ユーザーの発言として、チャット履歴にも保存
             history_text = f"（画像が投稿されました。画像の内容： {image_description}）"
-            add_to_chat_history(session_id, 'user', history_text)
 
             # 長期記憶にも、説明文を一つの情報として保存
             image_source = f"image_from_user:{user_id}"
