@@ -8,8 +8,16 @@ from flask import Flask, request, abort
 import json
 
 import logging
-# loggingの基本設定
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+import sys # sysモジュールを新しくimport
+
+# loggingの基本設定（出力先を明示的に指定）
+logging.basicConfig(
+    stream=sys.stdout, 
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+
 
 from io import BytesIO
 from PIL import Image
@@ -305,7 +313,6 @@ def callback():
 # テキストメッセージを処理する受付係
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
-    # ★ print を logging.info に変更
     logging.info("▼▼▼ handle_text_messageが呼び出されました ▼▼▼")
 
     source = event.source
@@ -314,33 +321,32 @@ def handle_text_message(event):
     message_text = event.message.text
     reply_token = event.reply_token
 
-    # ★ print を logging.info に変更
     logging.info(f"受信メッセージ: '{message_text}', session_id: {session_id}")
 
     add_to_chat_history(session_id, 'user', message_text)
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
-        
-        # 1. まずキーワードをチェックする
+
+        if message_text.startswith("要約して："):
+            # （この部分は変更なし）
+            return
+
         if message_text.lower() == 'pdf':
-            liff_url = "https://starlit-alfajores-f1b64c.netlify.app/" #
-            liff_url = "https://starlit-alfajores-f1b64c.netlify.app/liff.html" #
-            reply_text = f"PDFはここに送るぽち！大きいPDFは読めないから気をつけるによ\n{liff_url}"
+            # （この部分は変更なし）
+            return
+
+        # ★★★ ここからが修正部分 ★★★
+        if message_text.startswith(("質問：", "質問:")):
+            # 重いanswer_question関数を呼び出すのをやめ、一時的に固定メッセージを返す
+            logging.info("質問機能は一時的に無効化されています。")
+            reply_text = "現在、質問機能はメンテナンス中です。少々お待ちください。"
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
                     messages=[TextMessage(text=reply_text)]
                 )
             )
-            return # 案内を送ったら、ここで処理を終了する
-        # ★★★ ここまでが追加部分 ★★★
-
-        # 2. キーワードに当てはまらない場合は、今までの処理を続ける
-        if message_text.startswith(("質問：", "質問:")):
-            question = message_text.replace("質問：", "", 1).replace("質問:", "", 1).strip()
-            answer = answer_question(question, user_id, session_id)
-            line_bot_api.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=answer)]))
             return
 
         elif message_text == "DB確認":
