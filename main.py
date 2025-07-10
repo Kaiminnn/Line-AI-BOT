@@ -7,6 +7,10 @@ from flask import Flask, request, abort
 
 import json
 
+import logging
+# loggingの基本設定
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 from io import BytesIO
 from PIL import Image
 
@@ -168,24 +172,24 @@ def check_and_prune_db(session):
 
 def check_and_prune_chat_history(session, session_id):
     """指定されたsession_idのチャット履歴が上限を超えていたら、古いものから削除する"""
-    # ★★★ flush=True を追加 ★★★
-    print(f"--- チャット履歴チェック開始: session_id={session_id} ---", flush=True)
+    # ★ print を logging.info に変更
+    logging.info(f"--- チャット履歴チェック開始: session_id={session_id} ---")
     
     total_count = session.query(ChatHistory).filter(ChatHistory.session_id == session_id).count()
-    print(f"現在の履歴数: {total_count}, 設定上限: {MAX_CHAT_HISTORY}", flush=True)
+    logging.info(f"現在の履歴数: {total_count}, 設定上限: {MAX_CHAT_HISTORY}")
 
     if total_count > MAX_CHAT_HISTORY:
         items_to_delete_count = total_count - MAX_CHAT_HISTORY
-        print(f"上限超過！ 古い履歴を {items_to_delete_count} 件削除します。", flush=True)
+        logging.info(f"上限超過！ 古い履歴を {items_to_delete_count} 件削除します。")
         
         oldest_history = session.query(ChatHistory).filter(ChatHistory.session_id == session_id).order_by(ChatHistory.created_at.asc()).limit(items_to_delete_count).all()
         for history_item in oldest_history:
             session.delete(history_item)
-        print(f"削除処理が完了しました。", flush=True)
+        logging.info(f"削除処理が完了しました。")
     else:
-        print("上限に達していないため、削除は行いません。", flush=True)
+        logging.info("上限に達していないため、削除は行いません。")
     
-    print("--- チャット履歴チェック完了 ---", flush=True)
+    logging.info("--- チャット履歴チェック完了 ---")
 
 def get_chat_history(session_id):
     session = Session()
@@ -301,8 +305,8 @@ def callback():
 # テキストメッセージを処理する受付係
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
-    # ★★★ flush=True を追加 ★★★
-    print("▼▼▼ handle_text_messageが呼び出されました ▼▼▼", flush=True)
+    # ★ print を logging.info に変更
+    logging.info("▼▼▼ handle_text_messageが呼び出されました ▼▼▼")
 
     source = event.source
     session_id = source.group_id if source.type == 'group' else source.user_id
@@ -310,15 +314,14 @@ def handle_text_message(event):
     message_text = event.message.text
     reply_token = event.reply_token
 
-    # ★★★ flush=True を追加 ★★★
-    print(f"受信メッセージ: '{message_text}', session_id: {session_id}", flush=True)
+    # ★ print を logging.info に変更
+    logging.info(f"受信メッセージ: '{message_text}', session_id: {session_id}")
 
     add_to_chat_history(session_id, 'user', message_text)
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
-
-
+        
         # 1. まずキーワードをチェックする
         if message_text.lower() == 'pdf':
             liff_url = "https://starlit-alfajores-f1b64c.netlify.app/" #
