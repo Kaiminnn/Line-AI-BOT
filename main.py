@@ -80,7 +80,6 @@ Base.metadata.create_all(engine, checkfirst=True)
 
 
 # --- ヘルパー関数群 ---
-
 def scrape_website(url):
     try:
         response = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
@@ -169,14 +168,24 @@ def check_and_prune_db(session):
 
 def check_and_prune_chat_history(session, session_id):
     """指定されたsession_idのチャット履歴が上限を超えていたら、古いものから削除する"""
+    # ★★★ flush=True を追加 ★★★
+    print(f"--- チャット履歴チェック開始: session_id={session_id} ---", flush=True)
+    
     total_count = session.query(ChatHistory).filter(ChatHistory.session_id == session_id).count()
+    print(f"現在の履歴数: {total_count}, 設定上限: {MAX_CHAT_HISTORY}", flush=True)
+
     if total_count > MAX_CHAT_HISTORY:
         items_to_delete_count = total_count - MAX_CHAT_HISTORY
+        print(f"上限超過！ 古い履歴を {items_to_delete_count} 件削除します。", flush=True)
+        
         oldest_history = session.query(ChatHistory).filter(ChatHistory.session_id == session_id).order_by(ChatHistory.created_at.asc()).limit(items_to_delete_count).all()
         for history_item in oldest_history:
             session.delete(history_item)
-        print(f"チャット履歴の上限を超えたため、{session_id} の古い履歴を {items_to_delete_count} 件削除しました。")
-
+        print(f"削除処理が完了しました。", flush=True)
+    else:
+        print("上限に達していないため、削除は行いません。", flush=True)
+    
+    print("--- チャット履歴チェック完了 ---", flush=True)
 
 def get_chat_history(session_id):
     session = Session()
@@ -292,11 +301,17 @@ def callback():
 # テキストメッセージを処理する受付係
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
+    # ★★★ flush=True を追加 ★★★
+    print("▼▼▼ handle_text_messageが呼び出されました ▼▼▼", flush=True)
+
     source = event.source
     session_id = source.group_id if source.type == 'group' else source.user_id
     user_id = source.user_id
     message_text = event.message.text
     reply_token = event.reply_token
+
+    # ★★★ flush=True を追加 ★★★
+    print(f"受信メッセージ: '{message_text}', session_id: {session_id}", flush=True)
 
     add_to_chat_history(session_id, 'user', message_text)
 
