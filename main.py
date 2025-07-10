@@ -208,7 +208,7 @@ def answer_question(question, user_id, session_id):
         return final_response.text
     except Exception as e:
         logging.error(f"質問応答中にエラーが発生しました: {e}")
-        return "申し訳ありません、応答の生成中にエラーが発生しました。"
+        return "ごめんぽち、たぶんメモリーかAPI不足でこらえられないぽち。課金したら解決するにょ"
     finally:
         session.close()
 
