@@ -92,6 +92,19 @@ Base.metadata.create_all(engine, checkfirst=True)
 
 
 # --- ヘルパー関数群 ---
+def send_debug_message(session_id, text):
+    """デバッグ用のテキストをLINEにプッシュ通知する"""
+    try:
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            # デバッグメッセージであることが分かりやすいように、接頭辞をつける
+            debug_text = f"[DEBUG] {text}"
+            line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=debug_text)]))
+    except Exception as e:
+        # デバッグメッセージの送信自体が失敗する可能性も考慮
+        print(f"デバッグメッセージの送信に失敗: {e}", flush=True)
+
+
 def scrape_website(url):
     try:
         response = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
@@ -313,15 +326,16 @@ def callback():
 # テキストメッセージを処理する受付係
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
-    logging.info("▼▼▼ handle_text_messageが呼び出されました ▼▼▼")
-
-    source = event.source
-    session_id = source.group_id if source.type == 'group' else source.user_id
-    user_id = source.user_id
+    # logging.infoの代わりに、新しいデバッグ関数を呼び出す
+    session_id = event.source.group_id if event.source.type == 'group' else event.source.user_id
+    send_debug_message(session_id, "▼▼▼ handle_text_messageが呼び出されました ▼▼▼")
+    
+    # --- これ以降は、元のコードと同じ ---
+    user_id = event.source.user_id
     message_text = event.message.text
     reply_token = event.reply_token
 
-    logging.info(f"受信メッセージ: '{message_text}', session_id: {session_id}")
+    send_debug_message(session_id, f"受信メッセージ: '{message_text}'")
 
     add_to_chat_history(session_id, 'user', message_text)
 
@@ -329,16 +343,26 @@ def handle_text_message(event):
         line_bot_api = MessagingApi(api_client)
 
         if message_text.startswith("要約して："):
-            # （この部分は変更なし）
+            url_to_summarize = message_text.replace("要約して：", "").strip()
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text="承知しました。内容を要約しますので、少々お待ちください。")]
+                )
+            )
+            thread = threading.Thread(target=summarize_and_push_message, args=(url_to_summarize, session_id))
+            thread.start()
             return
 
         if message_text.lower() == 'pdf':
-            # （この部分は変更なし）
+            liff_url = "https://starlit-alfajores-f1b64c.netlify.app/liff.html"
+            reply_text = f"PDFをアップは、ここから！\n{liff_url}"
+            line_bot_api.reply_message(
+                ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=reply_text)])
+            )
             return
 
-        # ★★★ ここからが修正部分 ★★★
         if message_text.startswith(("質問：", "質問:")):
-            # 重いanswer_question関数を呼び出すのをやめ、一時的に固定メッセージを返す
             logging.info("質問機能は一時的に無効化されています。")
             reply_text = "現在、質問機能はメンテナンス中です。少々お待ちください。"
             line_bot_api.reply_message(
@@ -357,25 +381,15 @@ def handle_text_message(event):
             session.close()
             line_bot_api.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=reply_text)]))
             return
-
+        
         else:
             urls = re.findall(r'https?://\S+', message_text)
             commentary = re.sub(r'https?://\S+', '', message_text).strip()
 
             if commentary:
                 store_message(user_id, commentary)
-
+            
             if urls:
-                try:
-                    line_bot_api.reply_message(
-                        ReplyMessageRequest(
-                            reply_token=reply_token,
-                            messages=[TextMessage(text=f"{len(urls)}件のURL受け取ったぽち。")]
-                        )
-                    )
-                except Exception as e:
-                    print(f"URL処理の初期返信でエラー（トークン切れや重複返信の可能性）: {e}")
-
                 for url in urls:
                     thread = threading.Thread(target=process_url_and_notify, args=(url, session_id))
                     thread.start()
