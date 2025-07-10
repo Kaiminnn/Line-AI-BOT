@@ -188,7 +188,7 @@ def answer_question(question, user_id, session_id):
     try:
         question_embedding = embed_text(question)
         if question_embedding is None: return "質問の解析に失敗しました。"
-        candidate_docs = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(25).all()
+        candidate_docs = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(20).all()
         if not candidate_docs: return "まだ情報が十分に蓄積されていないようです。"
         final_results = rerank_documents(question, candidate_docs)
         if not final_results: return "関連性の高い情報が見つかりませんでした。"
@@ -276,7 +276,7 @@ def answer_and_push_message(question, user_id, session_id, reply_token):
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.reply_message(
-                ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text="ご質問、ありがとうございます。少し長めに考えますので、お待ちください...")])
+                ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text="ちょっと考えてるから待つぽち...")])
             )
     except Exception as e:
         logging.error(f"質問応答の初期返信でエラー: {e}")
