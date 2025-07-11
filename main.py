@@ -252,7 +252,7 @@ def handle_text_message(event):
             session = Session()
             doc_count = session.query(Document).count()
             session.close()
-            reply_text = f"長期記憶(Documents)の件数: {doc_count} 件"
+            reply_text = f"ぽちのメもは {doc_count} 件あるよ"
             line_bot_api.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=reply_text)]))
             return
         
@@ -301,7 +301,7 @@ def process_url_and_notify(url, session_id):
         if is_success:
              with ApiClient(configuration) as api_client:
                 line_bot_api = MessagingApi(api_client)
-                message_text = f"URLの内容を記憶しました！\n『{scraped_data.get('title', 'タイトル不明')}』"
+                message_text = f"覚えたによ！\n『{scraped_data.get('title', 'タイトル不明')}』"
                 line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=message_text)]))
     else:
         with ApiClient(configuration) as api_client:
@@ -340,7 +340,7 @@ def process_image_and_notify(user_id, session_id, message_id, reply_token):
             image_source = f"image_from_user:{user_id}"
             store_message(user_id, image_description, source=image_source)
 
-            push_text = f"画像を記憶しました！\n\n【AIによる画像の説明】\n{image_description}"
+            push_text = f"この画像わかったによ！\n\n【AIによる画像の説明】\n{image_description}"
             line_bot_api.push_message(
                 PushMessageRequest(to=session_id, messages=[TextMessage(text=push_text)])
             )
@@ -400,7 +400,7 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
         if is_success:
             with ApiClient(configuration) as api_client:
                 line_bot_api = MessagingApi(api_client)
-                message_text = f"PDF「{filename}」を記憶しました！\n\nファイルリンク:\n{drive_link}"
+                message_text = f"PDF「{filename}」を覚えたに！\n\nファイルリンク:\n{drive_link}"
                 line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[TextMessage(text=message_text)]))
     except Exception as e:
         logging.error(f"PDFバックグラウンド処理中にエラー: {e}")
