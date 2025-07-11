@@ -161,53 +161,56 @@ def check_and_prune_db(session):
         session.commit()
         logging.info(f"上限を超えたため、古いメッセージを {items_to_delete_count} 件削除しました。")
 
-def answer_question(question, user_id, session_id):
-    session = Session()
-    try:
-        # 1. 質問をベクトル化
-        question_embedding = embed_text(question)
-        if question_embedding is None: 
-            return "質問の解析に失敗しました。"
-
-        # 2. データベースから関連情報を検索 (リランキングの候補数を20件がメモリのMAX、GeminiのAPI側でも多いと文字すでアウト
-        candidate_docs = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(7).all()
-        if not candidate_docs: 
-            return "まだ情報が十分に蓄積されていないようです。"
-
-        # --- rerank_documentsの呼び出しを削除 ---
-
-        # 3. 最終的な回答を生成する
-        context = "\n".join([f"【資料{i+1}】\n{doc.content}\n" for i, doc in enumerate(candidate_docs)])
-        
-        # ★★★ ここが新しい「賢いプロンプト」 ★★★
-        final_prompt = f"""あなたは、与えられた参考情報だけを元に、ユーザーの質問に答える誠実なアシスタントです。
-
-# あなたのルール
-- 必ず「参考情報」の中から、質問に答えるために**本当に関連のある情報だけを注意深く選び出し**、その選んだ情報だけを根拠にして回答を生成してください。
-- 参考情報の中に回答の根拠となる情報が見つからない場合は、無理に答えを作らず、必ず「**その情報は見つかりませんでした。**」とだけ答えてください。
-- 回答の最後には、必ず「ぽち」を付けてください。
-
-# 参考情報
-{context}
+def rerank_documents(question, documents):
+    if not documents: return []
+    rerank_prompt = f"""以下の「ユーザーの質問」と、それに関連する可能性のある「資料リスト」があります。資料リストの中から、質問に答えるために本当に重要度の高い資料を、重要度順に最大5つ選び、その番号だけをカンマ区切りで出力してください。例： 3,1,5,2,4
 
 # ユーザーの質問
 {question}
 
+# 資料リスト
+"""
+    for i, doc in enumerate(documents):
+        rerank_prompt += f"【資料{i}】\n{doc.content}\n\n"
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        response = model.generate_content(rerank_prompt)
+        reranked_indices = [int(i.strip()) for i in response.text.split(',') if i.strip().isdigit()]
+        reranked_docs = [documents[i] for i in reranked_indices if i < len(documents)]
+        logging.info(f"リランキング後のドキュメント順: {reranked_indices}")
+        return reranked_docs
+    except Exception as e:
+        logging.error(f"リランキング中にエラーが発生しました: {e}")
+        return documents[:5]
+
+def answer_question(question, user_id, session_id):
+    session = Session()
+    try:
+        question_embedding = embed_text(question)
+        if question_embedding is None: return "質問の意味あがわからないにAIは解析にSIPPAISITAYO。"
+        candidate_docs = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(20).all()
+        if not candidate_docs: return "情報が十分に蓄積されていないに。"
+        final_results = rerank_documents(question, candidate_docs)
+        if not final_results: return "関連性の高い情報が見つからないに。"
+        context = "\n".join([f"- {doc.content}" for doc in final_results])
+        final_prompt = f"""以下の非常に精度の高い参考情報を中心に、ユーザーの質問に答えてください。語尾に"ポチ"」とつけて下さい。
+
+# 参考情報
+{context}
+
+# 質問
+{question}
+
 # 回答
 """
-        # ★★★ モデルをProモデルに変更 ★★★
-        model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
         final_response = model.generate_content(final_prompt)
-        
         return final_response.text
-        
     except Exception as e:
         logging.error(f"質問応答中にエラーが発生しました: {e}")
         return "ごめんぽち、たぶんメモリーかAPI不足でこらえられないぽち。課金したら解決するにょ"
     finally:
         session.close()
-    
-
 
 @app.route("/callback", methods=['POST'])
 def callback():
