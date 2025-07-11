@@ -193,7 +193,7 @@ def answer_question(question, user_id, session_id):
         final_results = rerank_documents(question, candidate_docs)
         if not final_results: return "関連性の高い情報が見つかりませんでした。"
         context = "\n".join([f"- {doc.content}" for doc in final_results])
-        final_prompt = f"""以下の非常に精度の高い参考情報だけを使って、ユーザーの質問に簡潔に答えてください。
+        final_prompt = f"""以下の非常に精度の高い参考情報だけを使って、ユーザーの質問に簡潔に答えてください。語尾にポチとつけて下さい。
 
 # 参考情報
 {context}
@@ -235,7 +235,7 @@ def handle_text_message(event):
 
         if message_text.lower() == 'pdf':
             liff_url = "https://starlit-alfajores-f1b64c.netlify.app/liff.html"
-            reply_text = f"PDFをアップは、ここから！\n{liff_url}"
+            reply_text = f"PDFをアップはここポチ！\n{liff_url}"
             line_bot_api.reply_message(
                 ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=reply_text)])
             )
@@ -306,7 +306,7 @@ def process_url_and_notify(url, session_id):
     else:
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
-            line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"【失敗】URLへのアクセスに失敗しました。\n{url}")]))
+            line_bot_api.push_message(PushMessageRequest(to=session_id, messages=[TextMessage(text=f"【失敗】URLへのアクセスに失敗したぽち。\n{url}")]))
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
@@ -349,7 +349,7 @@ def process_image_and_notify(user_id, session_id, message_id, reply_token):
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.push_message(
-                PushMessageRequest(to=session_id, messages=[TextMessage(text="画像の処理中にエラーが発生しました。")])
+                PushMessageRequest(to=session_id, messages=[TextMessage(text="うまく画像が見れないぽち。")])
             )
 
 
@@ -406,7 +406,7 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
         logging.error(f"PDFバックグラウンド処理中にエラー: {e}")
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
-            message = TextMessage(text=f"PDF「{filename}」の処理中にエラーが発生しました。\n\nファイルリンク:\n{drive_link}")
+            message = TextMessage(text=f"PDF「{filename}」の処理中にエラーが発生に。\n\nファイルリンク:\n{drive_link}")
             line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
 
 def upload_to_google_drive_and_get_link(pdf_bytes, filename):
