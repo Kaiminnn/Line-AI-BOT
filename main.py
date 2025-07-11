@@ -169,8 +169,8 @@ def answer_question(question, user_id, session_id):
         if question_embedding is None: 
             return "質問の解析に失敗しました。"
 
-        # 2. データベースから関連情報を検索 (リランキングの候補数を20件に増やしておく)
-        candidate_docs = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(10).all()
+        # 2. データベースから関連情報を検索 (リランキングの候補数を20件がMAXここが多いとメモリオーバー、GeminiのAPIもここ多いとむり)
+        candidate_docs = session.query(Document).order_by(Document.embedding.l2_distance(question_embedding)).limit(7).all()
         if not candidate_docs: 
             return "まだ情報が十分に蓄積されていないようです。"
 
