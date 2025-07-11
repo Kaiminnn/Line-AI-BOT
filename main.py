@@ -327,7 +327,7 @@ def process_image_and_notify(user_id, session_id, message_id, reply_token):
             line_bot_blob_api = MessagingApiBlob(api_client)
             try:
                 line_bot_api.reply_message(
-                    ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text="画像を認識中です...")])
+                    ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text="この画像も説明するから待つにょ...")])
                 )
             except: pass
             
