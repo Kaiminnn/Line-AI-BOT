@@ -193,7 +193,7 @@ def answer_question(question, user_id, session_id):
         final_results = rerank_documents(question, candidate_docs)
         if not final_results: return "関連性の高い情報が見つからないに。"
         context = "\n".join([f"- {doc.content}" for doc in final_results])
-        final_prompt = f"""以下の非常に精度の高い参考情報を中心に、ユーザーの質問に答えて。全て関連しているなら全ての情報使って良い。セリフの語尾を"ポチ"」として会話して。
+        final_prompt = f"""以下の非常に精度の高い参考情報を中心に、ユーザーの質問に知っているだけ答えて。回答の情報は多い方が望ましい。セリフの語尾を"ぽち"として会話して。
 
 # 参考情報
 {context}
