@@ -135,12 +135,34 @@ def embed_text(text_to_embed):
 
 def store_message(user_id, message_text, source=None):
     if not message_text or message_text.isspace(): return
+    
+    # ★★★ ここからが追加・変更部分 ★★★
+    content_to_store = message_text # デフォルトでは元のテキストを保存内容とする
+    try:
+        # Geminiに短い件名（タイトル）を生成させる
+        prompt = f"以下の文章に、内容を的確に表す10文字程度の短い件名（タイトル）を「件名：〇〇」の形式で付けてください。\n\n# 文章\n{message_text}"
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        response = model.generate_content(prompt)
+        title = response.text.strip()
+        
+        # 元のテキストとタイトルを結合して、保存する内容を作成する
+        content_to_store = f"{title}\n本文：{message_text}"
+        logging.info(f"AIによるタイトル付与成功: {title}")
+
+    except Exception as e:
+        logging.error(f"タイトルの自動生成中にエラー: {e}")
+        # エラーが起きても処理を止めず、元のテキストだけで処理を続行する
+        content_to_store = message_text
+    # ★★★ ここまでが追加・変更部分 ★★★
+
     session = Session()
     try:
         source_id = source if source else f"user:{user_id}"
-        embedding = embed_text(message_text)
+        
+        # 情報をリッチにした content_to_store をベクトル化して保存する
+        embedding = embed_text(content_to_store)
         if embedding:
-            document = Document(content=message_text, embedding=embedding, source=source_id)
+            document = Document(content=content_to_store, embedding=embedding, source=source_id)
             session.add(document)
             session.commit()
             logging.info(f"情報をDBに保存しました。source: {source_id}")
