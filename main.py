@@ -69,6 +69,22 @@ class Document(Base):
     source = Column(String(2048), nullable=True)
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+
+# --- ▼▼▼ ここからが修正・追加箇所です ▼▼▼ ---
+# pgvector拡張機能を有効にする
+# Base.metadata.create_all を呼び出す前に、まず拡張機能が存在することを確認・作成します。
+# これにより「type "vector" does not exist」エラーを防ぎます。
+try:
+    with engine.connect() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+        conn.commit()
+    logging.info("pgvector拡張機能が有効であることを確認しました。")
+except Exception as e:
+    logging.error(f"pgvector拡張機能の有効化中にエラーが発生しました: {e}")
+    # エラーが発生した場合、アプリケーションを続行すると危険なため、ここで処理を中断させることも検討できます。
+    raise e
+# --- ▲▲▲ ここまでが修正・追加箇所です ▲▲▲ ---
+
 Session = sessionmaker(bind=engine)
 Base.metadata.create_all(engine, checkfirst=True)
 
@@ -98,7 +114,7 @@ def scrape_website(url):
 
 def clean_text(raw_text):
     lines = (line.strip() for line in raw_text.splitlines())
-    chunks = (phrase.strip() for line in lines for phrase in line.split("  ") if len(phrase.strip()) > 20)
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  ") if len(phrase.strip()) > 5)
     cleaned_text = '\n'.join(chunk for chunk in chunks if chunk)
     return cleaned_text
 
