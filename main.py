@@ -6,9 +6,7 @@ import google.generativeai as genai
 from flask import Flask, request, abort
 import json
 from io import BytesIO
-from PIL import Image
 import threading
-import fitz
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -25,9 +23,6 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from datetime import datetime, timezone
 from flask import jsonify
 from flask_cors import CORS
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 
 # loggingの基本設定
 import logging
@@ -359,13 +354,14 @@ def handle_image_message(event):
     thread.start()
 
 def process_image_and_notify(user_id, session_id, message_id, reply_token):
+    from PIL import Image  # ★ 画像処理が必要になった瞬間にライブラリを読み込む
     try:
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_blob_api = MessagingApiBlob(api_client)
             try:
                 line_bot_api.reply_message(
-                    ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text="この画像も説明するから待つにょ...")])
+                    ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text="画像を認識中です...")])
                 )
             except: pass
             
@@ -411,6 +407,7 @@ def handle_upload():
         return jsonify({'status': 'error', 'message': 'An error occurred on the server'}), 500
 
 def process_pdf_and_notify(pdf_bytes, filename, context_id):
+    import fitz  # ★ PDF処理が必要になった瞬間にライブラリを読み込む
     logging.info(f"PDFバックグラウンド処理開始: {filename}")
     drive_link = ""
     try:
@@ -446,8 +443,13 @@ def process_pdf_and_notify(pdf_bytes, filename, context_id):
             line_bot_api = MessagingApi(api_client)
             message = TextMessage(text=f"PDF「{filename}」の処理中にエラーが発生に。\n\nファイルリンク:\n{drive_link}")
             line_bot_api.push_message(PushMessageRequest(to=context_id, messages=[message]))
-
+            
 def upload_to_google_drive_and_get_link(pdf_bytes, filename):
+    # ★ Google Drive連携が必要になった瞬間にライブラリを読み込む
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseUpload
+
     try:
         logging.info("Google Driveへのアップロードを開始します。")
         creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
